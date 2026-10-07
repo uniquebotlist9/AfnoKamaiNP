@@ -109,7 +109,7 @@ jobs:
         if: env.configured == 'true'
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIRESTORE_PROJECT_ID: afnokamai
+          FIRESTORE_PROJECT_ID: afnokamainp
         run: |
           out=$(node scripts/firestore-probe.cjs 2>&1) || true
           echo "$out"
@@ -128,7 +128,7 @@ jobs:
           # clients; this identity is server-side and never ships to a
           # browser, and it is never logged.
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIRESTORE_PROJECT_ID: afnokamai
+          FIRESTORE_PROJECT_ID: afnokamainp
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}

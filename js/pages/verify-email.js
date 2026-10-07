@@ -62,22 +62,40 @@ if (isConfigured()) {
       await auth.currentUser.reload();
       if (auth.currentUser.emailVerified) {
         syncVerifiedFlag(auth.currentUser);
-        setStatus(`<span class="spin"></span><span>Verified! Taking you to the next step…</span>`);
+        setStatus(`${icon('check')} Email verified!`, 'ok');
         const profile = await fetchProfile(auth.currentUser.uid);
         route(auth.currentUser, profile);
         return true;
       }
-      setStatus(`${icon('clock')} Waiting for verification… We check automatically every few seconds.`);
+      // Only show "waiting" message if we still have a valid user session
+      if (auth.currentUser) {
+        setStatus(`${icon('clock')} Waiting for verification… We check automatically every few seconds.`);
+      }
       return false;
-    } catch (_) {
-      setStatus(`${icon('alert')} Couldn't check status right now. Retrying…`);
+    } catch (e) {
+      // Silently handle connection errors — don't spam the console or UI
+      // if the user has already navigated away or the session expired.
+      if (auth.currentUser) {
+        setStatus(`${icon('alert')} Couldn't check status right now.`);
+      }
       return false;
     }
   }
 
   function startPolling() {
     clearInterval(pollTimer);
-    pollTimer = setInterval(checkNow, 5000);
+    // Poll every 8 seconds instead of 5, with a maximum of 3 retries
+    // to avoid overwhelming Firebase Auth when the connection is unstable.
+    let attempts = 0;
+    pollTimer = setInterval(() => {
+      attempts++;
+      if (attempts > 3) {
+        clearInterval(pollTimer);
+        setStatus(`${icon('alert')} Connection issue — please refresh the page.`);
+        return;
+      }
+      checkNow();
+    }, 8000);
   }
 
   function setResendCountdown(sec) {

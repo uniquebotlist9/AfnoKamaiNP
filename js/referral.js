@@ -367,20 +367,19 @@ export async function finalizeReferral(rawCode) {
     return { ok: true, skipped: true, reason: 'no-code' };
   }
   if (!user.emailVerified) {
-    return { ok: true, skipped: true, reason: 'unverified' }; // keep the pending code
+    // Check Appwrite user document's emailVerified first (programmatically settable),
+    // fall back to Firebase Auth's emailVerified.
+    try {
+      const userSnap = await getDoc(doc(db, 'users', user.uid));
+      const profile = userSnap.exists ? (userSnap.data() || {}) : {};
+      if (!profile.emailVerified && !user.emailVerified) {
+        return { ok: true, skipped: true, reason: 'unverified' };
+      }
+    } catch (_) {
+      // If we can't read the Appwrite doc, use the Firebase check below.
+    }
   }
-  try {
-    const userSnap = await getDoc(doc(db, 'users', user.uid));
-    const profile = userSnap.exists() ? (userSnap.data() || {}) : {};
-    if (profile.referredBy) {
-      clearReferralStorage();
-      return { ok: true, skipped: true, reason: 'already-attributed' };
-    }
-    const codeSnap = await getDoc(doc(db, 'referralCodes', code));
-    if (!codeSnap.exists()) {
-      clearReferralStorage();
-      return { ok: true, skipped: true, reason: 'invalid-code' };
-    }
+  // Email verified (from Appwrite doc or Firebase Auth) — continue finalization.
     const referrerId = codeSnap.data().userId || '';
     if (!referrerId || referrerId === user.uid) {
       // Self-referral: record nothing. Rules would reject it as well.
@@ -404,6 +403,7 @@ export async function finalizeReferral(rawCode) {
     } catch (_) {
       return { ok: false, reason: 'network' }; // keep the pending code, retry later
     }
+    try {
     const batch = writeBatch(db);
     batch.set(doc(db, 'referrals', referralId), {
       referrerId,
@@ -464,7 +464,7 @@ export async function finalizeReferral(rawCode) {
     await batch.commit();
     clearReferralStorage();
     return { ok: true, referrerId, code };
-  } catch (e) {
+    } catch (e) {
     const code2 = e && e.code;
     if (code2 === 'permission-denied') {
       // Rules rejected the attribution (self-referral, already attributed,

@@ -32,7 +32,19 @@ if (isConfigured()) {
     // bounces freshly logged-in users back to login.html.
     const user = await waitForAuth();
     if (!user) { location.replace('login.html'); return; }
-    if (!user.emailVerified) { location.replace('verify-email.html'); return; }
+    if (!user.emailVerified) {
+    // Check Appwrite user document's emailVerified first (programmatically settable),
+    // fall back to Firebase Auth's emailVerified.
+    let emailVerified = user.emailVerified;
+    try {
+      const profile = await fetchProfile(user.uid);
+      if (profile && profile.emailVerified) {
+        emailVerified = true; // Appwrite doc has it verified
+      }
+    } catch (_) {
+      // keep the Firebase value
+    }
+    if (!emailVerified) { location.replace('verify-email.html'); return; }
     const profile = await fetchProfile(user.uid);
     if (profile) {
       if (profile.fullName) document.getElementById('fullName').value = profile.fullName;

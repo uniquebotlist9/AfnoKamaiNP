@@ -181,11 +181,13 @@ function taskModal(existingDoc) {
     const btn = ev.currentTarget;
     btnBusy(btn, true, 'Saving…');
     const deadlineVal = m.root.querySelector('#t-deadline').value;
+    const minsInput = m.root.querySelector('#t-mins').value.trim();
+    const estimatedMinutes = minsInput && Number.isInteger(Number(minsInput)) ? Math.max(1, Number(minsInput)) : 10;
     const data = {
       title, description: desc, instructions: instr,
       category: m.root.querySelector('#t-cat').value,
       difficulty: m.root.querySelector('#t-diff').value,
-      estimatedMinutes: m.root.querySelector('#t-mins').value.trim() || '10–15',
+      estimatedMinutes,
       rewardPaisa: toPaisa(reward),
       slotsTotal: Math.max(0, Number(m.root.querySelector('#t-slots').value) || 0),
       deadline: deadlineVal ? new Date(deadlineVal + 'T23:59:59+05:45') : null,

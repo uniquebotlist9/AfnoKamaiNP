@@ -53,7 +53,6 @@ function navLink(id, current, badgeId) {
  * Returns { user, profile }.
  */
 let installEvent = null;
-let installEvent = null;
 
 export async function mountShell(pageId) {
   if (!ensureConfigured()) throw redirectSignal();

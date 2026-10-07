@@ -68,7 +68,12 @@ export async function fetchProfile(uid) {
 /** Decide where an authenticated user belongs in the registration chain. */
 export function destinationFor(user, profile) {
   if (!user) return R('login.html');
-  if (!user.emailVerified) return R('verify-email.html');
+  // Check Appwrite user document's emailVerified first (programmatically settable),
+  // fall back to Firebase Auth's emailVerified.
+  const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
+  const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
+  const emailVerifiedFromFirebase = user.emailVerified;
+  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) return R('verify-email.html');
   if (!profile) return R('profile-setup.html');
   if (!profile.profileComplete) return R('profile-setup.html');
   if (!profile.pinSetAt) return R('profile-setup.html#pin');
@@ -104,12 +109,17 @@ export async function requireAppAccess() {
 
   let profile = await fetchProfile(user.uid);
   if (!profile) {
-    // Auth user exists but Firestore doc missing (interrupted signup) → heal.
+    // Auth user exists but Appwrite doc missing (interrupted signup) → heal.
     const { ensureUserDocs } = await import('./api.js');
     await ensureUserDocs(user).catch(() => { /* retried on next load */ });
     profile = await fetchProfile(user.uid);
   }
-  if (!user.emailVerified) { location.replace(R('verify-email.html')); throw redirectSignal(); }
+  // Check Appwrite user document's emailVerified first (programmatically settable),
+  // fall back to Firebase Auth's emailVerified.
+  const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
+  const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
+  const emailVerifiedFromFirebase = user.emailVerified;
+  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) { location.replace(R('verify-email.html')); throw redirectSignal(); }
   if (!profile || !profile.profileComplete || !profile.pinSetAt) {
     location.replace(R('profile-setup.html')); throw redirectSignal();
   }

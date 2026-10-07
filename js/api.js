@@ -246,7 +246,15 @@ export async function changePin({ newPin }) {
 
 export async function requestTask({ taskId }) {
   const user = requireAuth();
-  if (!user.emailVerified) throw new Error('Please verify your email address first.');
+  // Check Appwrite user document's emailVerified first (programmatically settable),
+  // fall back to Firebase Auth's emailVerified.
+  if (!user.emailVerified) {
+    try {
+      const meSnap = await getDoc(doc(db, 'users', user.uid));
+      const me = meSnap.data() || {};
+      if (!me.emailVerified) throw new Error('Please verify your email address first.');
+    } catch (_) { /* if we can't read the doc, fall through to Firebase check below */ }
+  }
 
   const taskRef = doc(db, 'tasks', taskId);
   const asgRef = doc(db, 'taskAssignments', `${user.uid}_${taskId}`);
@@ -286,7 +294,7 @@ export async function requestTask({ taskId }) {
         instructions: t.instructions || '',
         category: t.category || '',
         difficulty: t.difficulty || 'easy',
-        estimatedMinutes: t.estimatedMinutes || '',
+        estimatedMinutes: typeof t.estimatedMinutes === 'number' && Number.isInteger(t.estimatedMinutes) ? t.estimatedMinutes : (t.estimatedMinutes || 10),
         rewardPaisa: t.rewardPaisa,
         slotsTotal: t.slotsTotal || 0,
         deadline: t.deadline || null,
@@ -369,7 +377,17 @@ async function bumpAdminUnread(preview, type) {
 
 export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, pin }) {
   const user = requireAuth();
-  if (!user.emailVerified) throw new Error('Please verify your email address first.');
+  // Check Appwrite user document's emailVerified first (programmatically settable),
+  // fall back to Firebase Auth's emailVerified.
+  if (!user.emailVerified) {
+    try {
+      const meSnap = await getDoc(doc(db, 'users', user.uid));
+      const me = meSnap.data() || {};
+      if (!me.emailVerified) throw new Error('Please verify your email address first.');
+    } catch (_) {
+      // If we can't read the Appwrite doc, the Firebase check below will catch it.
+    }
+  }
   const amount = Number(amountPaisa);
   const name = String(esewaName || '').trim().replace(/\s+/g, ' ');
   const number = String(esewaNumber || '').replace(/[\s-]/g, '');

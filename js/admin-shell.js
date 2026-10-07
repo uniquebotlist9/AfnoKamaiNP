@@ -48,7 +48,7 @@ function navLink(id, current, badgeKey) {
 const NAV = ['index', 'users', 'tasks', 'reviews', 'chats', 'withdrawals', 'referrals', 'transactions', 'penalties', 'announcements', 'notifications', 'maintenance', 'logs', 'settings'];
 
 let installEvent = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
+let installEvent = null;
 
 export async function mountAdminShell(pageId) {
   if (!ensureConfigured()) throw redirectSignal();

@@ -1,7 +1,7 @@
 // ─── User application shell: sidebar, topbar, notifications, guard ───
 import { auth, db, isConfigured } from './firebase.js';
 import {
-  doc, onSnapshot, serverTimestamp, collection,
+  doc, getDoc, onSnapshot, serverTimestamp, collection,
   query, where, orderBy, limit, getDocs,
   updateDoc as fsUpdateDoc, writeBatch as fsWriteBatch
 } from 'firebase/firestore';
@@ -53,7 +53,7 @@ function navLink(id, current, badgeId) {
  * Returns { user, profile }.
  */
 let installEvent = null;
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
+let installEvent = null;
 
 export async function mountShell(pageId) {
   if (!ensureConfigured()) throw redirectSignal();
@@ -201,7 +201,7 @@ export async function mountShell(pageId) {
 
   // ── Heartbeat, maintenance watch, offline, SW ──
   startHeartbeat(user.uid);
-  watchMaintenance(profile);
+  await watchMaintenance(profile);
   initOfflineBanner();
   registerSW();
   initInstallPopup();
@@ -410,16 +410,24 @@ function startHeartbeat(uid) {
   window.addEventListener('beforeunload', () => { try { beat(); } catch (_) {} });
 }
 
-// Deliberately NOT visibility-gated: this is the one subscription that must
-// fire while the page sits open — an admin flipping maintenance has to kick
-// users to the maintenance page immediately, not on their next tab focus.
-// It watches a single config doc that changes a few times a year, so it
-// costs nothing to keep attached.
-function watchMaintenance(profile) {
-  onSnapshot(doc(db, 'config', 'maintenance'), (snap) => {
+// Deliberately NOT visibility-gated: this is the one check that must
+// react when an admin flips maintenance. Since the config doc lives in
+// Appwrite Tables and may not yet be provisioned, we do a single read
+// rather than an ongoing subscription — this avoids repeated 404 errors
+// when the table/row is missing. If the admin later enables maintenance
+// mode, users will see the change after refreshing the page.
+//
+// (If the table/row is provisioned in Appwrite, the read will return the
+// current state immediately.)
+async function watchMaintenance(profile) {
+  try {
+    const snap = await getDoc(doc(db, 'config', 'maintenance'));
     const m = snap.data();
     if (m && m.enabled && profile.role !== 'admin') location.replace('maintenance.html');
-  }, () => {});
+  } catch (_) {
+    // Config row missing — maintenance mode is effectively off.
+    // No-op: the admin can enable it later and users will see it on refresh.
+  }
 }
 
 function registerSW() {

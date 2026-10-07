@@ -124,8 +124,36 @@ class Timestamp {
   valueOf() { return this._ms; }
 }
 
-function decodeValue(v) {
-  return typeof v === 'string' && ISO_RE.test(v) ? new Timestamp(v) : v;
+// ── Nested-object columns ─────────────────────────────────────────────
+// Mirrors JSON_FIELDS in js/appwrite-db.js. Appwrite has no object
+// attribute type, so the client stores nested objects as JSON strings and
+// decodes them on read — this shim must decode the same fields or
+// consumers see a string where they expect an object. The sharpest
+// failure was pushSubscriptions.keys: web-push found no auth/p256dh on a
+// string and refused EVERY send ("subscription must have 'auth' and
+// 'p256dh' keys"), so no notification could ever reach a device, and
+// notificationPrefs.categories arrived as a string so category opt-outs
+// were silently ignored. Known-field decoding only (no content sniffing):
+// free-text fields such as title/body must never be rewritten even when
+// they happen to read like JSON.
+const JSON_FIELDS = {
+  users: ['stats', 'ban', 'referralStats'],
+  referralRiskFlags: ['signals'],
+  adminLogs: ['metadata'],
+  pushSubscriptions: ['keys'],
+  notificationPrefs: ['categories']
+};
+
+function decodeValue(v, table, field) {
+  if (typeof v !== 'string') return v;
+  if (ISO_RE.test(v)) return new Timestamp(v);
+  if ((JSON_FIELDS[table] || []).includes(field)) {
+    try {
+      const parsed = JSON.parse(v);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch (_) { /* stored as a plain string after all */ }
+  }
+  return v;
 }
 
 function encodeValue(v) {
@@ -146,11 +174,11 @@ function encodeData(data) {
   return out;
 }
 
-function decodeRow(row) {
+function decodeRow(row, table) {
   const out = {};
   for (const key of Object.keys(row)) {
     if (key.charCodeAt(0) === 36) continue;
-    out[key] = decodeValue(row[key]);
+    out[key] = decodeValue(row[key], table, key);
   }
   return out;
 }
@@ -183,15 +211,48 @@ const WHERE_METHOD = {
 class DocumentSnapshot {
   constructor(ref, row) { this.ref = ref; this.id = ref.id; this._row = row; }
   get exists() { return !!this._row; }
-  data() { return this._row ? decodeRow(this._row) : undefined; }
+  data() { return this._row ? decodeRow(this._row, this.ref.table) : undefined; }
   get(field) {
     if (!this._row) return undefined;
-    return decodeValue(this._row[field]);
+    return decodeValue(this._row[field], this.ref.table, field);
   }
 }
 
+// ── Row id compaction ─────────────────────────────────────────────────
+// Identical to rowIdOf() in js/appwrite-db.js and functions/bridge/src/
+// policy.js: Appwrite caps row ids at 36 chars, but the logical ids this
+// sender builds — notably notificationLog/<notificationId>_<subscriptionId>
+// (two 25-char compacted ids = 51) — blow past that. Every writeLog() then
+// died AFTER the push attempt had already been made, which the sender's
+// catch treated as a processing error: the notification was rolled back to
+// queued, so even a successful send re-queued and would duplicate, and the
+// delivery log was never written. Ids already within the limit pass
+// through untouched, so existing rows and server-returned ids keep their
+// identity.
+const ROWID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/;
+
+function compactHash(id) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193, h3 = 0x9e3779b9;
+  for (let i = 0; i < id.length; i++) {
+    const c = id.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+    h3 = Math.imul(h3 ^ (c + i), 2246822519) >>> 0;
+  }
+  return [h1, h2, h3].map((h) => h.toString(16).padStart(8, '0')).join('');
+}
+
+function rowIdOf(logical) {
+  const id = String(logical || '');
+  return ROWID_RE.test(id) ? id : 'k' + compactHash(id);
+}
+
 class DocumentReference {
-  constructor(table, id) { this.table = table; this.id = id; this.path = `${table}/${id}`; }
+  constructor(table, id) {
+    this.table = table;
+    this.id = rowIdOf(id);
+    this.path = `${table}/${this.id}`;
+  }
 
   async get() {
     try {

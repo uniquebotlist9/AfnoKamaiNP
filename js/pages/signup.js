@@ -62,7 +62,7 @@ async function validateReferralCode() {
   refInput.value = code || refInput.value.trim().toUpperCase();
   if (!refInput.value.trim()) { setRefHint(REF_HINT_DEFAULT, ''); return; }
   if (!isValidCode(code)) {
-    setRefHint('That code doesn’t look right. It should look like AFK-AB12CD34.', 'error');
+    setRefHint('That code doesn’t look right. It should look like AFK-AB23CD4E.', 'error');
     return;
   }
   setRefHint('Checking code…');

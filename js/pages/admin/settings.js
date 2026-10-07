@@ -19,7 +19,11 @@ const DEFAULT_RULES_TEXT = [
   'Complete tasks exactly according to the provided instructions.',
   'Do not submit duplicate work or false completion claims.',
   'Never manipulate screenshots or evidence.',
-  'Ask for clarification in chat when instructions are unclear.'
+  'Ask for clarification in chat when instructions are unclear.',
+  'The administrator\'s decision is final — on task reviews, rewards, holds, penalties and withdrawals.',
+  'Any misbehavior toward an administrator, or any attempt to scam or deceive them, results in a permanent ID ban.',
+  'Withdrawals require at least NPR 500 and 50 approved tasks on your account.',
+  'Accounts created while completing a task exist only for that task — keeping or using them for personal purposes results in a permanent ID ban.'
 ].join('\n');
 
 content.innerHTML = `

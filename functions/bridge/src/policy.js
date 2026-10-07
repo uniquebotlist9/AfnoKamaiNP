@@ -121,6 +121,30 @@ function nearNow(v, windowMs) {
 
 const validCode = (c) => isStr(c) && CODE_RE.test(c);
 
+// ── Row id compaction ─────────────────────────────────────────────────
+// The client adapter (js/appwrite-db.js) maps Firestore-era logical ids
+// longer than Appwrite's 36-char rowId limit onto deterministic compact ids.
+// This must be the SAME function so a rule can recompute the row id a
+// client should have used from the data it is validating. Ids that are
+// already valid row ids pass through untouched.
+const ROWID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/;
+
+function compactHash(id) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193, h3 = 0x9e3779b9;
+  for (let i = 0; i < id.length; i++) {
+    const c = id.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+    h3 = Math.imul(h3 ^ (c + i), 2246822519) >>> 0;
+  }
+  return [h1, h2, h3].map((h) => h.toString(16).padStart(8, '0')).join('');
+}
+
+function rowIdOf(logical) {
+  const id = String(logical || '');
+  return ROWID_RE.test(id) ? id : 'k' + compactHash(id);
+}
+
 async function validHandle(h, ctx) {
   if (!isStr(h) || h.length < 3 || h.length > 30 || !HANDLE_RE.test(h)) return false;
   if (RESERVED_HANDLES.has(h)) return false;
@@ -225,7 +249,7 @@ POLICY.users = {
       && !cur.referredBy
       && isStr(merged.referredBy) && merged.referredBy && merged.referredBy !== ctx.uid
       && validCode(merged.referredByCode)) {
-      const row = await ctx.read('referrals', `${merged.referredBy}_${ctx.uid}`);
+      const row = await ctx.read('referrals', rowIdOf(`${merged.referredBy}_${ctx.uid}`));
       if (row && row.referredUserId === ctx.uid) return null;
     }
 
@@ -280,7 +304,7 @@ POLICY.taskAssignments = {
   async create(d, rowId, ctx) {
     if (d.isHistory === true) return 'history rows are written by admins';
     if (d.userId !== ctx.uid) return 'an assignment is bound to the worker';
-    if (rowId !== `${ctx.uid}_${d.taskId}`) return 'document id must be <uid>_<taskId>';
+    if (rowId !== rowIdOf(`${ctx.uid}_${d.taskId}`)) return 'document id must be <uid>_<taskId>';
     if (!ctx.verified) return 'verify your email first';
     if (!(await ctx.notBanned())) return 'account is not active';
     let e = keysOnly(d, ASSIGNMENT_FIELDS); if (e) return e;
@@ -395,7 +419,7 @@ POLICY.referrals = {
     if (!ctx.verified) return 'verify your email first';
     if (!(await ctx.notBanned())) return 'account is not active';
     let e = keysOnly(d, REFERRAL_FIELDS); if (e) return e;
-    if (rowId !== `${d.referrerId}_${ctx.uid}`) return 'document id must be <referrer>_<referred>';
+    if (rowId !== rowIdOf(`${d.referrerId}_${ctx.uid}`)) return 'document id must be <referrer>_<referred>';
     if (!isStr(d.referrerId) || !d.referrerId) return 'referrerId required';
     if (d.referrerId === ctx.uid) return 'you cannot refer yourself';
     if (d.referredUserId !== ctx.uid) return 'the referred user must be you';
@@ -424,13 +448,16 @@ const REFERRAL_EVENT_FIELDS = [
 ];
 POLICY.referralEvents = {
   async create(d, rowId, ctx) {
-    const sep = rowId.indexOf('__');
-    const referralId = sep > 0 ? rowId.slice(0, sep) : '';
-    const eventId = sep > 0 ? rowId.slice(sep + 2) : rowId;
-    if (eventId !== 'joined') return 'only the joined event is user-writable';
+    // The parent referral is named by DATA (the adapter injects referralId
+    // on every write); a compacted row id has no splittable structure.
+    const referralId = isStr(d.referralId) ? d.referralId : '';
+    if (!referralId || referralId !== `${d.referrerId || ''}_${d.referredUserId || ''}`) {
+      return 'the event must match its referral relationship';
+    }
+    if (rowId !== rowIdOf(`${referralId}__joined`)) return 'only the joined event is user-writable';
     if (!ctx.verified) return 'verify your email first';
     let e = keysOnly(d, REFERRAL_EVENT_FIELDS); if (e) return e;
-    const ref = await ctx.read('referrals', referralId);
+    const ref = await ctx.read('referrals', rowIdOf(referralId));
     if (!ref || ref.referredUserId !== ctx.uid) return 'no referral relationship for this event';
     if (!isStr(d.referrerId) || !d.referrerId) return 'referrerId required';
     if (d.type !== 'joined') return 'type must be joined';
@@ -468,10 +495,11 @@ POLICY.notifications = {
     // (A) the exactly-once referral alert, written by the referred user
     if (d.type === 'referral_joined') {
       if (!isStr(d.userId) || !d.userId || d.userId === ctx.uid) return 'referral alert must address the inviter';
-      if (rowId !== `referral_joined_${d.userId}_${ctx.uid}`) return 'deterministic id mismatch';
-      if (d.category !== 'referral' || d.eventId !== rowId) return 'referral alert fields are pinned';
+      const logicalId = `referral_joined_${d.userId}_${ctx.uid}`;
+      if (rowId !== rowIdOf(logicalId)) return 'deterministic id mismatch';
+      if (d.category !== 'referral' || d.eventId !== logicalId) return 'referral alert fields are pinned';
       if (d.link !== 'referral.html') return 'referral alert link is pinned';
-      const ref = await ctx.read('referrals', `${d.userId}_${ctx.uid}`);
+      const ref = await ctx.read('referrals', rowIdOf(`${d.userId}_${ctx.uid}`));
       if (!ref || ref.referredUserId !== ctx.uid) return 'no referral relationship for this alert';
       return null;
     }
@@ -479,9 +507,10 @@ POLICY.notifications = {
     // (B) self-only security event
     if (SECURITY_TYPES.has(d.type)) {
       if (d.userId !== ctx.uid) return 'a security alert can only address you';
-      if (d.category !== 'security' || d.eventId !== rowId) return 'security alert fields are pinned';
-      if (!SEC_ID_RE.test(rowId)) return 'security id must be sec_<type>_<suffix>';
-      if (rowId.indexOf(`sec_${d.type}_`) !== 0) return 'security id must embed its own type';
+      if (d.category !== 'security' || !isStr(d.eventId)) return 'security alert fields are pinned';
+      if (!SEC_ID_RE.test(d.eventId)) return 'security id must be sec_<type>_<suffix>';
+      if (d.eventId.indexOf(`sec_${d.type}_`) !== 0) return 'security id must embed its own type';
+      if (rowId !== rowIdOf(d.eventId)) return 'deterministic id mismatch';
       return null;
     }
 
@@ -512,7 +541,7 @@ POLICY.pushSubscriptions = {
   async create(d, rowId, ctx) {
     let e = keysOnly(d, PUSH_FIELDS); if (e) return e;
     if (!isStr(d.deviceId) || d.deviceId.length < 8 || d.deviceId.length > 64) return 'deviceId out of range';
-    if (rowId !== `${ctx.uid}_${d.deviceId}`) return 'document id must be <uid>_<deviceId>';
+    if (rowId !== rowIdOf(`${ctx.uid}_${d.deviceId}`)) return 'document id must be <uid>_<deviceId>';
     if (d.userId !== ctx.uid) return 'a subscription is bound to the caller';
     if (!isStr(d.endpoint) || !d.endpoint.length || d.endpoint.length > 2048) return 'endpoint out of range';
     if (d.endpoint.slice(0, 8) !== 'https://') return 'push endpoints must be https';
@@ -565,11 +594,14 @@ function prefs(d) {
 }
 
 // ── conversations (id is the uid) ──────────────────────────────────────
+// userName/userEmail: chat.js and api.js's bumpAdminUnread both stamp them
+// on create; the columns exist in the table, and admins search on them.
 const CONV_CREATE_FIELDS = [
-  'participants', 'userId', 'unreadForAdmin', 'unreadForUser', 'userTyping',
-  'userTypingAt', 'userLastReadAt', 'adminTyping', 'adminTypingAt',
-  'adminLastReadAt', 'lastMessage', 'lastMessageAt', 'lastSenderId',
-  'lastSenderRole', 'lastType', 'createdAt', 'updatedAt'
+  'participants', 'userId', 'userName', 'userEmail', 'unreadForAdmin',
+  'unreadForUser', 'userTyping', 'userTypingAt', 'userLastReadAt',
+  'adminTyping', 'adminTypingAt', 'adminLastReadAt', 'lastMessage',
+  'lastMessageAt', 'lastSenderId', 'lastSenderRole', 'lastType',
+  'createdAt', 'updatedAt'
 ];
 const CONV_UPDATE_FIELDS = [
   'userTyping', 'userTypingAt', 'unreadForUser', 'userLastReadAt',
@@ -603,10 +635,18 @@ POLICY.conversations = {
 };
 
 // ── messages (id is <conversationId>__<messageId>) ─────────────────────
+// The conversation is named by DATA (the adapter injects conversationId on
+// every write); a compacted row id has no splittable structure, so the
+// rowId prefix is only a fallback for ids that still carry it.
+const conversationOf = (d, rowId) => {
+  if (isStr(d.conversationId) && d.conversationId) return d.conversationId;
+  const sep = String(rowId || '').indexOf('__');
+  return sep > 0 ? String(rowId).slice(0, sep) : '';
+};
+
 POLICY.messages = {
   async create(d, rowId, ctx) {
-    const sep = rowId.indexOf('__');
-    const cid = sep > 0 ? rowId.slice(0, sep) : '';
+    const cid = conversationOf(d, rowId);
     if (d.conversationId !== undefined && d.conversationId !== cid) return 'conversation id mismatch';
     if (!isStr(d.senderId) || !d.senderId) return 'senderId required';
 
@@ -622,8 +662,11 @@ POLICY.messages = {
       // One message per second. firestore.rules kept this in the same atomic
       // batch as the conversation's stamp; here the proxy advances the stamp
       // itself, so skipping the paired conversation update no longer buys a
-      // scripting client anything.
-      const conv = await ctx.read('conversations', cid);
+      // scripting client anything. The PREVIOUS stamp must be read with
+      // ctx.pre() (resource.data semantics): ctx.read() sees the post-batch
+      // state, where this batch's own new lastMessageAt would make every
+      // legitimate send look like it arrived within the 1s window.
+      const conv = await ctx.pre('conversations', cid);
       if (!conv) return 'no conversation to send into';
       const prev = conv.lastMessageAt ? Date.parse(conv.lastMessageAt) : null;
       const now = Date.now();
@@ -637,8 +680,7 @@ POLICY.messages = {
     return null;
   },
   async update(d, cur, rowId, ctx) {
-    const sep = rowId.indexOf('__');
-    const cid = sep > 0 ? rowId.slice(0, sep) : '';
+    const cid = conversationOf(d, rowId) || conversationOf(cur, rowId);
     if (cid !== ctx.uid && !ctx.admin) return 'not your conversation';
     const ch = changedKeys(cur, d);
     if (!ch.length) return null;

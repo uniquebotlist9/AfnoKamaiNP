@@ -367,26 +367,44 @@ export async function finalizeReferral(rawCode) {
     return { ok: true, skipped: true, reason: 'no-code' };
   }
   if (!user.emailVerified) {
-    // Check Appwrite user document's emailVerified first (programmatically settable),
-    // fall back to Firebase Auth's emailVerified.
+    // Check the user document's emailVerified first (programmatically settable
+    // by the verify-email page) — Firebase Auth's flag can lag until the next
+    // token mint.
+    let emailVerified = false;
     try {
-      const userSnap = await getDoc(doc(db, 'users', user.uid));
-      const profile = userSnap.exists ? (userSnap.data() || {}) : {};
-      if (!profile.emailVerified && !user.emailVerified) {
-        return { ok: true, skipped: true, reason: 'unverified' };
-      }
+      const meSnap = await getDoc(doc(db, 'users', user.uid));
+      emailVerified = meSnap.exists() && (meSnap.data() || {}).emailVerified === true;
     } catch (_) {
-      // If we can't read the Appwrite doc, use the Firebase check below.
+      // An unreadable doc counts as unverified: the pending code is kept and
+      // attribution retries on a later visit.
+    }
+    if (!emailVerified) {
+      return { ok: true, skipped: true, reason: 'unverified' }; // keep the pending code
     }
   }
-  // Email verified (from Appwrite doc or Firebase Auth) — continue finalization.
-    const referrerId = codeSnap.data().userId || '';
+  // Email verified (from the user doc or Firebase Auth) — continue finalization.
+  let referrerId = '';
+  let referralId = '';
+  let writing = false;
+  try {
+    const userSnap = await getDoc(doc(db, 'users', user.uid));
+    const profile = userSnap.exists() ? (userSnap.data() || {}) : {};
+    if (profile.referredBy) {
+      clearReferralStorage();
+      return { ok: true, skipped: true, reason: 'already-attributed' };
+    }
+    const codeSnap = await getDoc(doc(db, 'referralCodes', code));
+    if (!codeSnap.exists()) {
+      clearReferralStorage();
+      return { ok: true, skipped: true, reason: 'invalid-code' };
+    }
+    referrerId = codeSnap.data().userId || '';
     if (!referrerId || referrerId === user.uid) {
       // Self-referral: record nothing. Rules would reject it as well.
       clearReferralStorage();
       return { ok: true, skipped: true, reason: 'self-referral' };
     }
-    const referralId = `${referrerId}_${user.uid}`;
+    referralId = `${referrerId}_${user.uid}`;
     if ((await getDoc(doc(db, 'referrals', referralId))).exists()) {
       clearReferralStorage();
       return { ok: true, skipped: true, reason: 'already-attributed' };
@@ -403,7 +421,7 @@ export async function finalizeReferral(rawCode) {
     } catch (_) {
       return { ok: false, reason: 'network' }; // keep the pending code, retry later
     }
-    try {
+    writing = true;
     const batch = writeBatch(db);
     batch.set(doc(db, 'referrals', referralId), {
       referrerId,
@@ -464,11 +482,18 @@ export async function finalizeReferral(rawCode) {
     await batch.commit();
     clearReferralStorage();
     return { ok: true, referrerId, code };
-    } catch (e) {
+  } catch (e) {
     const code2 = e && e.code;
-    if (code2 === 'permission-denied') {
-      // Rules rejected the attribution (self-referral, already attributed,
-      // code mismatch…) — never retry blindly, never fake success.
+    if (code2 === 'permission-denied' && writing) {
+      // The proxy rejected the batch itself — but a retry that raced a
+      // completed attribution is reported as 'already exists'. Confirm
+      // which before wiping the pending code.
+      try {
+        if ((await getDoc(doc(db, 'referrals', referralId))).exists()) {
+          clearReferralStorage();
+          return { ok: true, referrerId, code };
+        }
+      } catch (_) { /* fall through */ }
       clearReferralStorage();
       return { ok: true, skipped: true, reason: 'rejected' };
     }
@@ -476,6 +501,8 @@ export async function finalizeReferral(rawCode) {
       // Index still building — keep the pending code so a later visit retries.
       return { ok: false, reason: 'index' };
     }
+    // Anything else (offline, a read failure, a transport error) is
+    // transient: the pending code is kept and the next app page retries.
     return { ok: false, reason: 'network' };
   }
 }

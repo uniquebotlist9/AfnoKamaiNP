@@ -80,6 +80,24 @@ unchanged. Nothing in the browser can reach an Appwrite API key.
    `firebase.json`. Delete it, or migrate it if you ever enable Cloud
    Functions.
 
+## Re-verified 2026-10-07
+
+Independent audit of the live project `6ac536e6001dd29a193`
+(`appwrite.config.json`): database `6ac53c92002a02a202fe` ("Production
+TablesDB") holds the full 26 tables / 321 columns / 110 indexes; table
+permissions match the design (public read on `referralCodes`,
+`referralHandles`, `config`; `read("users")` on `tasks`, `announcements`;
+row-security elsewhere); the `afnokamai-bridge` function's active deployment
+(04:52 UTC) post-dates the last source edit, so it is built from this repo;
+web platforms, the `admins` team, the `APPWRITE_API_KEY` function variable
+and the GitHub Actions secrets are all present.
+
+A fresh end-to-end smoke test with a throwaway account (deleted afterwards)
+passed 7/7: Firebase signUp → bridge session mint, public row read through
+the session, policy denial of a role-escalation write, the three-row signup
+batch committing through the write proxy, own-row read via row-level grants,
+and a foreign row returning 404.
+
 ## Acceptance checklist
 
 - [x] No Firestore read or write remains in the runtime path. The only

@@ -100,6 +100,25 @@ export async function redirectIfAuthed() {
 }
 
 /**
+ * A referral code captured at signup is finalized at the END of setup; a
+ * failure there (offline, a rejected write) defers it to exactly here.
+ * One attempt per page load: finalizeReferral keeps the pending code unless
+ * the outcome is final, so a transient failure simply tries again later.
+ */
+let referralRetried = false;
+async function retryDeferredReferral() {
+  if (referralRetried) return;
+  referralRetried = true;
+  try {
+    const { readPendingCode, finalizeReferral } = await import('./referral.js');
+    const pending = readPendingCode();
+    if (!pending) return;
+    const res = await finalizeReferral(pending);
+    if (!res.ok) console.info('Referral attribution deferred:', res.reason);
+  } catch (_) { /* retried on the next page load */ }
+}
+
+/**
  * For authenticated app pages. Enforces the full chain and returns
  * { user, profile }. Throws Redirect signal internally via location.
  */
@@ -123,6 +142,7 @@ export async function requireAppAccess() {
   if (!profile || !profile.profileComplete || !profile.pinSetAt) {
     location.replace(R('profile-setup.html')); throw redirectSignal();
   }
+  retryDeferredReferral();
   return { user, profile };
 }
 

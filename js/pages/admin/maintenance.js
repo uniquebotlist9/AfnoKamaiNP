@@ -27,7 +27,9 @@ content.innerHTML = `
   <div class="card maint-hero" style="margin-bottom:18px">
     <div style="display:flex; justify-content:center; margin-bottom:14px" id="maint-icon"></div>
     <h2 id="maint-preview-title">AfnoKamai is currently undergoing scheduled maintenance.</h2>
-    <p class="muted" id="maint-preview-msg">We expect services to return shortly. Thank you for your patience.</p>
+    <div id="maint-preview-msg" style="text-align:left; margin:12px auto 0; max-width:46ch">
+      <p class="muted" style="margin:0 0 10px; line-height:1.6">We expect services to return shortly. Thank you for your patience.</p>
+    </div>
     <p class="small muted" id="maint-preview-end" hidden></p>
     <p class="hint" style="margin-top:14px">This is a live preview of what users will see.</p>
   </div>
@@ -68,6 +70,18 @@ content.innerHTML = `
 
 content.querySelector('#maint-icon').innerHTML = icon('wrench');
 
+// Mirrors maintenance.html: one paragraph per line, **bold** / *italic*
+// honoured, HTML escaped first. The preview must match the user-facing page.
+const inlineMd = (s) => esc(s)
+  .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+  .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+const renderMessage = (s) => String(s || '')
+  .split(/\r?\n/)
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .map((line) => `<p class="muted" style="margin:0 0 10px; line-height:1.6">${inlineMd(line)}</p>`)
+  .join('');
+
 function loadIntoForm(m) {
   content.querySelector('#m-enabled').checked = !!(m && m.enabled);
   content.querySelector('#m-title').value = m?.title || '';
@@ -85,7 +99,8 @@ function loadIntoForm(m) {
     ? badge('Maintenance active', 'red', { dot: true })
     : badge('All systems normal', 'green', { dot: true });
   content.querySelector('#maint-preview-title').textContent = m?.title || 'AfnoKamai is currently undergoing scheduled maintenance.';
-  content.querySelector('#maint-preview-msg').textContent = m?.message || 'We expect services to return shortly. Thank you for your patience.';
+  const msg = m?.message || 'We expect services to return shortly. Thank you for your patience.';
+  content.querySelector('#maint-preview-msg').innerHTML = renderMessage(msg);
   const endEl = content.querySelector('#maint-preview-end');
   if (m?.expectedEndAt) { endEl.hidden = false; endEl.textContent = `Expected to return: ${fmtDateTime(m.expectedEndAt)}`; }
   else endEl.hidden = true;

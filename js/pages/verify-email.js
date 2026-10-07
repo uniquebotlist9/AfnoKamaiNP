@@ -30,9 +30,14 @@ if (isConfigured()) {
   // "Email verified: No" forever. Mirror it once, guarded so a repeat call or a
   // permissions failure can never break the verification flow.
   let synced = false;
-  function syncVerifiedFlag(u) {
+  async function syncVerifiedFlag(u) {
     if (synced || !u || !u.emailVerified || !db) return;
     synced = true;
+    // The write proxy validates this flip against the ID token's
+    // email_verified claim, but the cached token can predate the click on
+    // the verification link (reload() refreshes the user, not the token).
+    // Mint a fresh token so the claim agrees with the flag being written.
+    try { await u.getIdToken(true); } catch (_) { /* retried on the next check */ }
     updateDoc(doc(db, 'users', u.uid), { emailVerified: true })
       .catch(() => { synced = false; }); // retried on the next successful check
   }

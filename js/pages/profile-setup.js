@@ -33,18 +33,20 @@ if (isConfigured()) {
     const user = await waitForAuth();
     if (!user) { location.replace('login.html'); return; }
     if (!user.emailVerified) {
-    // Check Appwrite user document's emailVerified first (programmatically settable),
-    // fall back to Firebase Auth's emailVerified.
-    let emailVerified = user.emailVerified;
-    try {
-      const profile = await fetchProfile(user.uid);
-      if (profile && profile.emailVerified) {
-        emailVerified = true; // Appwrite doc has it verified
+      // Check the user document's emailVerified first (programmatically
+      // settable by the verify-email page) — Firebase Auth's flag can lag
+      // until the next token mint.
+      let emailVerified = user.emailVerified;
+      try {
+        const verifiedDoc = await fetchProfile(user.uid);
+        if (verifiedDoc && verifiedDoc.emailVerified) {
+          emailVerified = true; // user doc has it verified
+        }
+      } catch (_) {
+        // keep the Firebase value
       }
-    } catch (_) {
-      // keep the Firebase value
+      if (!emailVerified) { location.replace('verify-email.html'); return; }
     }
-    if (!emailVerified) { location.replace('verify-email.html'); return; }
     const profile = await fetchProfile(user.uid);
     if (profile) {
       if (profile.fullName) document.getElementById('fullName').value = profile.fullName;

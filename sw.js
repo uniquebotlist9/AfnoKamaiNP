@@ -5,12 +5,12 @@
    site is closed. They only ever *display*; the subscription document is
    owned by the page (js/push.js) because Firestore auth does not exist
    inside a service worker. */
-const CACHE = 'afnokamai-v9';
+const CACHE = 'afnokamai-v10';
 const ASSETS = [
   'assets/icon.svg',
-  'css/global.css?v=4',
+  'css/global.css?v=5',
   'css/auth.css',
-  'css/app.css?v=5',
+  'css/app.css?v=6',
   'css/chat.css?v=2',
   'css/admin.css'
 ];
@@ -50,10 +50,14 @@ self.addEventListener('fetch', (e) => {
   }
 
   // JS: network first — stale code on a money platform is worse than a
-  // slow load. Falls back to cache only when offline.
+  // slow load. `cache: 'no-cache'` forces revalidation: without it the
+  // browser HTTP cache (js files ship `public, max-age=3600`) answers the
+  // fetch from disk for up to an hour, which defeats network-first and
+  // keeps serving pre-deploy code after a release. Falls back to cache
+  // only when offline.
   if (url.pathname.endsWith('.js')) {
     e.respondWith(
-      fetch(e.request)
+      fetch(e.request, { cache: 'no-cache' })
         .then((res) => {
           const clone = res.clone();
           caches.open(CACHE).then((c) => putIfOk(c, clone));

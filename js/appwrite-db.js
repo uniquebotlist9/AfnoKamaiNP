@@ -156,6 +156,34 @@ function autoId() {
   return out;
 }
 
+// ── Row id compaction ─────────────────────────────────────────────────
+// Appwrite caps row ids at 36 chars from a limited alphabet, but ids this
+// app inherited from Firestore run far longer: referrals/{a}_{b} (57 chars),
+// notifications/referral_joined_{a}_{b} (74), taskAssignments/{uid}_{taskId},
+// pushSubscriptions/{uid}_{deviceId} and every flattened subcollection id.
+// Business code keeps building the long logical id; makeRef() maps it to a
+// deterministic compact row id, and the write proxy derives ids from row
+// DATA (functions/bridge/src/policy.js computes this same function). Ids
+// that are already valid pass through untouched, so every uid-keyed row,
+// code and handle keeps its id.
+const ROWID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/;
+
+function compactHash(id) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193, h3 = 0x9e3779b9;
+  for (let i = 0; i < id.length; i++) {
+    const c = id.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+    h3 = Math.imul(h3 ^ (c + i), 2246822519) >>> 0;
+  }
+  return [h1, h2, h3].map((h) => h.toString(16).padStart(8, '0')).join('');
+}
+
+export function rowIdOf(logical) {
+  const id = String(logical || '');
+  return ROWID_RE.test(id) ? id : 'k' + compactHash(id);
+}
+
 /** Turn a Firestore path into { table, documentId, logical id, injected }. */
 function resolvePath(path) {
   for (const rule of SUBCOLLECTIONS) {
@@ -195,7 +223,7 @@ function makeRef(path) {
     __ref: true,
     path,
     table: r.table,
-    documentId: r.documentId,
+    documentId: rowIdOf(r.documentId),
     id: r.logical,
     inject: r.inject || {}
   };
@@ -408,25 +436,38 @@ function applyUpdate(table, raw, payload) {
 const rowsBase = (table) => `/tablesdb/${DB}/tables/${table}/rows`;
 const rowUrl = (ref) => `${rowsBase(ref.table)}/${encodeURIComponent(ref.documentId)}`;
 
-// A flattened table can always be turned back into the Firestore path it
-// came from, so a document the app reads exposes the same logical id the
-// Firestore version did and round-trips through doc().
-const FLATTENED_PATH = {
-  userPins: (flat) => `users/${flat}/private/pin`,
-  userNotes: (flat) => splitFlat(flat, (p, l) => `users/${p}/notes/${l}`),
-  referralEvents: (flat) => splitFlat(flat, (p, l) => `referrals/${p}/events/${l}`),
-  messages: (flat) => splitFlat(flat, (p, l) => `conversations/${p}/messages/${l}`)
+// A flattened table's rows carry their parent id in data (userId, referralId,
+// conversationId — injected on every write), so a row read back can rebuild
+// the Firestore path it came from. The split('__') fallback only fits legacy
+// flat ids; compacted ids have no readable structure, hence the data first.
+const FLATTENED_PARENT = {
+  userNotes: (row, flat) => row.userId || flat.split('__')[0],
+  referralEvents: (row, flat) => row.referralId || flat.split('__')[0],
+  messages: (row, flat) => row.conversationId || flat.split('__')[0]
 };
-
-function splitFlat(flat, build) {
-  const sep = flat.indexOf('__');
-  return sep > 0 ? build(flat.slice(0, sep), flat.slice(sep + 2)) : `${flat}`;
-}
+const FLATTENED_KIND = {
+  userNotes: ['users', 'notes'],
+  referralEvents: ['referrals', 'events'],
+  messages: ['conversations', 'messages']
+};
 
 function refForRow(table, row) {
   const flat = row.$id;
-  const build = FLATTENED_PATH[table];
-  if (build) return makeRef(build(flat));
+  if (table === 'userPins') {
+    const ref = makeRef(`users/${flat}/private/pin`);
+    ref.documentId = flat;
+    return ref;
+  }
+  const parent = FLATTENED_PARENT[table];
+  if (parent) {
+    const [head, kind] = FLATTENED_KIND[table];
+    const ref = makeRef(`${head}/${parent(row, flat)}/${kind}/${flat}`);
+    // makeRef re-derived the row id from the rebuilt path; the row this
+    // snapshot came from is addressed by its ACTUAL id.
+    ref.documentId = flat;
+    ref.id = flat.indexOf('__') > 0 ? flat.split('__')[1] : flat;
+    return ref;
+  }
   return makeRef(`${table}/${flat}`);
 }
 

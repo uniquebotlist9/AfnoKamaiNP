@@ -243,6 +243,14 @@ function makeCtx(id, state, cached) {
       if (state.final.has(key)) return state.final.get(key);
       return cached(table, rowId);
     },
+    // resource.data semantics: the row as it is BEFORE this batch lands.
+    // ctx.read() is getAfter-shaped (post-batch state) — correct for rules
+    // like signup's referral-code check, wrong for the chat pace check,
+    // which must compare against the PREVIOUS message stamp, not the one
+    // this same batch is writing.
+    async pre(table, rowId) {
+      return cached(table, rowId);
+    },
     async notBanned() {
       const hit = bannedCache.get(id.uid);
       if (hit && Date.now() - hit.at < 5000) return hit.value;

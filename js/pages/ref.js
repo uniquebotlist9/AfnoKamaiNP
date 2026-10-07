@@ -10,23 +10,34 @@ import { doc, getDoc } from 'firebase/firestore';
 import { onAuth } from '../guard.js';
 import { mountAside } from '../auth-common.js';
 import { icon } from '../icons.js';
-import { normalizeCode, storeCapturedCode, copyText } from '../referral.js';
+import { normalizeCode, normalizeHandle, isValidHandle, storeCapturedCode, copyText } from '../referral.js';
 import { toast } from '../ui.js';
 
 mountAside();
 
 const body = document.getElementById('ref-landing-body');
 
-/** Code from /ref/CODE (hosting rewrite) or ?ref=CODE — both supported. */
+/**
+ * Referral link segment from /ref/CODE (hosting rewrite) or ?ref=CODE.
+ * Both accepted forms are returned so boot() can resolve which one it is:
+ *   code   — the normalised AFK-XXXXXXXX code, when the segment is one
+ *   handle — the raw segment, lowercased, for the vanity form (/ref/alex)
+ * The handle must NOT be run through normalizeCode(): that would rewrite
+ * it into an AFK- prefix and the handle lookup could never match.
+ */
 function readCodeFromUrl() {
   const fromQuery = new URLSearchParams(location.search).get('ref') || '';
   const m = location.pathname.match(/\/ref\/([^/?#]+)/i);
   const fromPath = m ? decodeURIComponent(m[1] || '') : '';
-  return normalizeCode(fromQuery) || normalizeCode(fromPath);
+  const raw = fromPath.trim() || fromQuery.trim();
+  return {
+    code: normalizeCode(fromQuery) || normalizeCode(fromPath),
+    handle: normalizeHandle(raw)
+  };
 }
 
 function signupUrl(code) {
-  return code ? `signup.html?ref=${encodeURIComponent(code)}` : 'signup.html';
+  return code ? `/signup.html?ref=${encodeURIComponent(code)}` : '/signup.html';
 }
 
 function renderGeneric(message) {
@@ -38,7 +49,7 @@ function renderGeneric(message) {
     ${message ? `<p class="hint" style="margin-bottom:14px">${message}</p>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
       <a class="btn btn-primary btn-lg" href="${signupUrl('')}">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="login.html">${icon('logout')} Login</a>
+      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
     </div>
     <p class="hint" style="margin-top:16px">AfnoKamai does not promise income. Rewards depend on completing and getting tasks approved — follow all platform and third-party rules.</p>`;
 }
@@ -50,8 +61,8 @@ function renderInvalid() {
       <p>The referral code could not be found or has expired. You can still join AfnoKamai — just without a referral code.</p>
     </div>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
-      <a class="btn btn-primary btn-lg" href="signup.html">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="login.html">${icon('logout')} Login</a>
+      <a class="btn btn-primary btn-lg" href="/signup.html">${icon('user')} Create Account</a>
+      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
     </div>`;
 }
 
@@ -72,7 +83,7 @@ function renderValid(code, meta) {
     ${meta && meta.handle ? `<p class="hint" style="margin-bottom:12px">Invited through <strong>afnokamainp.web.app/ref/${esc(meta.handle)}</strong></p>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
       <a class="btn btn-primary btn-lg" href="${signupUrl(code)}">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="login.html">${icon('logout')} Login</a>
+      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
     </div>
     <p class="hint" style="margin-top:16px">When someone joins using your link and completes approved tasks, the inviter earns referral rewards — starting with रु15 after the new member's first 2 approved tasks, then रु5 for each approved task after that.</p>`;
   const btn = body.querySelector('#ref-copy-code');
@@ -89,7 +100,7 @@ function esc(s) {
 }
 
 async function boot() {
-  const code = readCodeFromUrl();
+  const { code: linkedCode, handle } = readCodeFromUrl();
   if (!isConfigured()) { renderGeneric(''); return; }
 
   // Already signed in? Never re-attribute an existing account through a URL.
@@ -103,30 +114,42 @@ async function boot() {
         <p>Referral invitations apply to new AfnoKamai accounts. Your current account keeps its existing referral status — nothing changes by opening this link.</p>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
-        <a class="btn btn-primary btn-lg" href="dashboard.html">${icon('dashboard')} Go to Dashboard</a>
-        <a class="btn ghost btn-lg" href="referral.html">${icon('link')} My referrals</a>
+        <a class="btn btn-primary btn-lg" href="/dashboard.html">${icon('dashboard')} Go to Dashboard</a>
+        <a class="btn ghost btn-lg" href="/referral.html">${icon('link')} My referrals</a>
       </div>`;
     return;
   }
 
-  if (!code) { renderInvalid(); return; }
+  // The segment must be one of the two accepted shapes — an AFK-XXXXXXXX
+  // code or a valid vanity handle (3–30 chars, not reserved) — before we
+  // touch the database.
+  if (!linkedCode && !isValidHandle(handle)) { renderInvalid(); return; }
 
   try {
     // Codes are public lookup docs — the anonymous landing page validates
     // them before signup; ownership binding happens later, in rules.
-    let snap = await getDoc(doc(db, 'referralCodes', code));
+    let code = linkedCode;
     let meta = {};
-    if (!snap.exists()) {
+    let snap = code ? await getDoc(doc(db, 'referralCodes', code)) : null;
+
+    if (!snap || !snap.exists()) {
       // Vanity handle form: /ref/alex → referralHandles/alex → the code.
-      snap = await getDoc(doc(db, 'referralHandles', code.toLowerCase()));
-      if (snap.exists()) {
-        const d = snap.data() || {};
-        meta = { handle: d.handle || code.toLowerCase() };
-        code = normalizeCode(d.code || '') || code;
-        snap = await getDoc(doc(db, 'referralCodes', code));
+      // (Also the fall-through for a code-shaped segment that is not a real
+      // code, e.g. a handle that happens to look like one.)
+      code = '';
+      snap = null;
+      if (isValidHandle(handle)) {
+        const hSnap = await getDoc(doc(db, 'referralHandles', handle));
+        if (hSnap.exists()) {
+          const d = hSnap.data() || {};
+          meta = { handle: d.handle || handle };
+          code = normalizeCode(d.code || '');
+        }
       }
+      if (code) snap = await getDoc(doc(db, 'referralCodes', code));
     }
-    if (!snap.exists()) { renderInvalid(); return; }
+
+    if (!code || !snap || !snap.exists()) { renderInvalid(); return; }
     storeCapturedCode(code);
     renderValid(code, meta);
   } catch (_) {

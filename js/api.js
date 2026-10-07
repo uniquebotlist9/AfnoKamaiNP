@@ -375,6 +375,10 @@ async function bumpAdminUnread(preview, type) {
 
 // ── Withdrawals ──────────────────────────────────────────────────────
 
+// Withdrawal eligibility required by the Terms of Service. Enforced here as
+// a backstop so the rule holds even if the withdraw page's check is bypassed.
+const MIN_APPROVED_TASKS = 50;
+
 export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, pin }) {
   const user = requireAuth();
   // Check Appwrite user document's emailVerified first (programmatically settable),
@@ -398,6 +402,10 @@ export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, p
 
   const meSnap = await getDoc(doc(db, 'users', user.uid));
   const me = meSnap.data() || {};
+  const approvedCount = Number(me.stats?.approved) || 0;
+  if (approvedCount < MIN_APPROVED_TASKS) {
+    throw new Error(`You need at least ${MIN_APPROVED_TASKS} approved tasks to withdraw — you currently have ${approvedCount}.`);
+  }
   const salt = me.pinSalt;
   if (!salt) throw new Error('No security PIN is set on your account.');
   const proof = await pinProof(pin, salt);

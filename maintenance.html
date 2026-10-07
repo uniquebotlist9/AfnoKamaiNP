@@ -31,7 +31,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
   <script>try{var t=localStorage.getItem('ak_theme');if(t==='dark'||((!t||t==='system')&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.dataset.theme='dark';}catch(e){}</script>
-  <link rel="stylesheet" href="css/global.css?v=4">
+  <link rel="stylesheet" href="css/global.css?v=5">
   <link rel="stylesheet" href="css/auth.css">
   <style>
     .maint-wrap {
@@ -55,6 +55,11 @@
     }
     .pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--amber-600); animation: pulse 1.6s infinite; }
     @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+    /* The admin's message is plain text with one paragraph per line; each
+       line renders as its own <p>, with **bold** / *italic* honoured. */
+    .maint-msg { text-align: left; margin-top: 16px; }
+    .maint-msg p { margin: 0 0 12px; line-height: 1.65; }
+    .maint-msg p:last-child { margin-bottom: 0; }
   </style>
   <script type="importmap">
   {
@@ -71,18 +76,31 @@
     import { db, isConfigured } from './js/firebase.js';
     import { doc, onSnapshot } from 'firebase/firestore';
     import { icon } from './js/icons.js';
-    import { fmtDateTime } from './js/utils.js';
+    import { esc, fmtDateTime } from './js/utils.js';
     import { logo } from './js/icons.js';
 
     document.getElementById('m-brand').innerHTML = logo({ size: 40 });
     document.getElementById('m-ic').innerHTML = icon('wrench');
+
+    // Message is stored as plain text (one paragraph per line) with the
+    // **bold** / *italic* markers the admin typed. HTML is escaped first so
+    // nothing stored in the config row can ever inject markup here.
+    const inlineMd = (s) => esc(s)
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>');
+    const renderMessage = (s) => String(s || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => `<p class="muted">${inlineMd(line)}</p>`)
+      .join('');
 
     if (isConfigured()) {
       onSnapshot(doc(db, 'config', 'maintenance'), (snap) => {
         const m = snap.data();
         if (!m || !m.enabled) { location.replace('index.html'); return; }
         if (m.title) document.getElementById('m-title').textContent = m.title;
-        if (m.message) document.getElementById('m-msg').textContent = m.message;
+        if (m.message) document.getElementById('m-msg').innerHTML = renderMessage(m.message);
         const endEl = document.getElementById('m-end');
         if (m.expectedEndAt) {
           endEl.hidden = false;
@@ -100,7 +118,9 @@
       <div id="m-brand" style="margin-bottom:22px"></div>
       <div class="maint-ic" id="m-ic"></div>
       <h1 style="font-size:22px" id="m-title">AfnoKamai is currently undergoing scheduled maintenance.</h1>
-      <p class="muted" id="m-msg">We expect services to return shortly. Your balances and task records are safe — thank you for your patience.</p>
+      <div class="maint-msg" id="m-msg">
+        <p class="muted">We expect services to return shortly. Your balances and task records are safe — thank you for your patience.</p>
+      </div>
       <p class="small muted" id="m-end" hidden></p>
       <span class="status-pill"><span class="pulse"></span> Status: maintenance in progress</span>
     </div>

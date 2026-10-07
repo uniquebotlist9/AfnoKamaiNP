@@ -408,7 +408,10 @@
 .action-sheet .side-label { color: var(--ink-3); }
 
 @media (max-width: 920px) {
-  .app-layout { grid-template-columns: 1fr; }
+  /* minmax(0, 1fr): a bare 1fr means minmax(auto, 1fr), so wide content
+     (chart canvases, nowrap action rows) inflated the single track to
+     700-900px and pushed the page past the phone viewport. */
+  .app-layout { grid-template-columns: minmax(0, 1fr); }
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0; width: 290px;
     transform: translateX(-105%); transition: transform .25s; box-shadow: var(--shadow-3);

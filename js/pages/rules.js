@@ -27,7 +27,7 @@ const DEFAULT_RULES = [
   ['Privacy & fairness', 'shield', '', 'Keep the platform fair for everyone', '', [
     'Do not share <strong>confidential task information</strong> with other users.',
     'Do not create <strong>multiple accounts</strong> to abuse rewards.',
-    'Do not use tasks for unauthorized personal purposes.'
+    'Accounts you create while completing a task exist only for that task — <strong>keeping or using them for personal purposes results in a permanent ID ban</strong>.'
   ]],
   ['Prohibited activity', 'ban', 'danger', 'Zero tolerance', 'Leads to permanent bans', [
     'Do not use <strong>bots, automation or scripts</strong> to fake or speed up task completion.',
@@ -36,6 +36,8 @@ const DEFAULT_RULES = [
     'Follow all third-party service rules — <strong>never perform a task that violates another service\'s terms or policies</strong>.'
   ]],
   ['Enforcement', 'alert', 'danger', 'What happens on violations', '', [
+    'The administrator\'s decision is <strong>final</strong> — on task reviews, rewards, holds, penalties and withdrawals alike.',
+    'Any <strong>misbehavior toward an administrator, or any attempt to scam or deceive them</strong>, results in an immediate, permanent <strong>ID ban</strong>.',
     '<strong>Fraud, abuse, manipulation or repeated violations</strong> can result in rejection, penalties, suspension, or a <strong>permanent ban</strong>.',
     'Penalties always carry a written reason and are permanently recorded on your account.',
     'Banned accounts cannot request tasks, submit work or withdraw funds.'
@@ -50,6 +52,7 @@ const MIN_WITHDRAWAL_PAISA = 50000; // रु 500 — same fallback the withdraw
 // line always matches the limit the withdraw form actually enforces.
 const withdrawalGroup = (minPaisa) => ['Withdrawals', 'rupee', 'warn', 'Withdraw within the platform limits', 'Strict rules', [
   `Every withdrawal must be <strong>at least ${fmtNPR(minPaisa)}</strong> — this is a strict minimum and requests below it are rejected automatically.`,
+  'Your account must also have at least <strong>50 approved tasks</strong> before a withdrawal can be requested.',
   'Only <strong>withdrawable</strong> funds (rewards whose hold period has finished) count toward that minimum.',
   'Only one withdrawal request can be in progress at a time — wait for it to finish before requesting another.',
   'Requests must be sent from <strong>your own eSewa account</strong> with your correct security PIN.'

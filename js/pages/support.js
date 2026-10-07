@@ -27,8 +27,8 @@ const FAQ_GROUPS = [
     ['What are penalties?', 'Admins can apply penalties for rule violations (e.g. duplicate submissions, false completion claims). Every penalty has a mandatory written reason shown to you, and is permanently recorded.']
   ]],
   ['Withdrawals', [
-    ['How do I withdraw?', 'On the Withdraw page, enter your eSewa account name, your eSewa mobile number, the amount, and your security PIN. An administrator verifies and processes the payout. Track progress from your withdrawal history.'],
-    ['Why can’t I withdraw my whole balance?', 'Only funds that have finished the hold period are withdrawable. Money still on hold cannot be used for withdrawals.'],
+    ['How do I withdraw?', 'You need at least रु500 withdrawable and 50 approved tasks on your account first. Then, on the Withdraw page, enter your eSewa account name, your eSewa mobile number, the amount, and your security PIN. An administrator verifies and processes the payout. Track progress from your withdrawal history.'],
+    ['Why can’t I withdraw my whole balance?', 'Only funds that have finished the hold period are withdrawable, and requests must be at least रु500 with 50 approved tasks on your account. Money still on hold cannot be used for withdrawals.'],
     ['How long does a withdrawal take?', 'Requests are reviewed by administrators. The tracker in your withdrawal history shows each step: Requested → Under review → Approved → Processing → Completed.'],
     ['What happens if my withdrawal is rejected?', 'You see the exact reason in the tracker and in a notification. Your balance was never debited for the request, so nothing is lost.']
   ]],

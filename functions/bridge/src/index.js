@@ -214,10 +214,23 @@ async function doBridge(payload) {
 }
 
 // ── The write proxy ────────────────────────────────────────────────────
+//
+// Three passes, mirroring how Firestore evaluates a WriteBatch:
+//
+//   1. build the post-batch state of every row the batch touches. Rules that
+//      used getAfter(...) — signup's `referralCodes/{code}`, the referral
+//      relationship, a claimed handle — must see rows created LATER in the
+//      same batch, otherwise ordering inside the batch would change meaning.
+//   2. validate each operation in order against the row as it was immediately
+//      before that operation, with ctx.read() resolving to pass 1.
+//   3. only if every operation passed, apply them in order.
+//
+// Steps 1–2 are what makes a batch all-or-nothing: one rejected operation
+// means Appwrite never hears about any of them.
+
 const bannedCache = new Map();
 
-function makeCtx(id) {
-  const rowCache = new Map();
+function makeCtx(id, state, cached) {
   const effects = [];
   return {
     uid: id.uid,
@@ -227,18 +240,15 @@ function makeCtx(id) {
     effects,
     async read(table, rowId) {
       const key = table + '/' + rowId;
-      if (rowCache.has(key)) return rowCache.get(key);
-      let row = null;
-      try { row = await readRow(table, rowId); } catch (_) { row = null; }
-      rowCache.set(key, row);
-      return row;
+      if (state.final.has(key)) return state.final.get(key);
+      return cached(table, rowId);
     },
     async notBanned() {
       const hit = bannedCache.get(id.uid);
       if (hit && Date.now() - hit.at < 5000) return hit.value;
       let value = true;
       try {
-        const me = await readRow('users', id.uid);
+        const me = await this.read('users', id.uid);
         value = !me || (me.status || 'active') === 'active';
       } catch (_) { value = true; }
       bannedCache.set(id.uid, { value: value, at: Date.now() });
@@ -248,55 +258,102 @@ function makeCtx(id) {
   };
 }
 
-async function doWrite(payload, id) {
-  const table = payload.table;
-  const rowId = payload.rowId;
-  const op = payload.op;
-  const data = (payload.data && typeof payload.data === 'object') ? payload.data : {};
+function shapeError(message) {
+  const e = new Error(message);
+  e.status = 400;
+  e.code = 'invalid-argument';
+  return e;
+}
 
-  if (!table || !rowId || ['create', 'update', 'delete'].indexOf(op) < 0) {
-    const e = new Error('malformed write request');
-    e.status = 400; e.code = 'invalid-argument';
-    throw e;
+async function doWrite(payload, id) {
+  let ops = null;
+  if (Array.isArray(payload.ops) && payload.ops.length) {
+    ops = payload.ops;
+  } else if (payload.op) {
+    ops = [{ op: payload.op, table: payload.table, rowId: payload.rowId, data: payload.data }];
   }
+  if (!ops) throw shapeError('malformed write request');
+  if (ops.length > 200) throw shapeError('a batch may hold at most 200 operations');
 
   const modules = await acl();
-  if (modules.TABLES.indexOf(table) < 0) {
-    const e = new Error('unknown collection: ' + table);
-    e.status = 400; e.code = 'invalid-argument';
-    throw e;
+  const batch = [];
+  for (const raw of ops) {
+    if (!raw || typeof raw !== 'object') throw shapeError('malformed write request');
+    const table = raw.table;
+    const rowId = raw.rowId;
+    const op = raw.op;
+    const data = (raw.data && typeof raw.data === 'object') ? raw.data : {};
+    if (!table || !rowId || ['create', 'update', 'delete'].indexOf(op) < 0) {
+      throw shapeError('malformed write request');
+    }
+    if (modules.TABLES.indexOf(table) < 0) throw shapeError('unknown collection: ' + table);
+    batch.push({ table: table, rowId: rowId, op: op, data: data });
   }
 
-  const ctx = makeCtx(id);
-  const current = await readRow(table, rowId);
+  const state = { cache: new Map(), final: new Map(), pre: new Map() };
+  const cached = async (table, rowId) => {
+    const key = table + '/' + rowId;
+    if (state.cache.has(key)) return state.cache.get(key);
+    let row = null;
+    try { row = await readRow(table, rowId); } catch (_) { row = null; }
+    state.cache.set(key, row);
+    return row;
+  };
 
-  const denial = await checkWrite({ table: table, op: op, rowId: rowId, data: data, current: current, ctx: ctx });
-  if (denial) {
-    const e = new Error(denial);
-    e.status = 403; e.code = 'permission-denied';
-    throw e;
+  // Pass 1 — the world after the batch.
+  for (const o of batch) {
+    const key = o.table + '/' + o.rowId;
+    const base = state.final.has(key) ? state.final.get(key) : await cached(o.table, o.rowId);
+    if (o.op === 'delete') state.final.set(key, null);
+    else if (o.op === 'create') state.final.set(key, o.data);
+    else state.final.set(key, base ? Object.assign({}, base, o.data) : o.data);
   }
 
-  let res;
-  if (op === 'create') {
-    const permissions = modules.permissionsFor(table, data, rowId);
-    res = await aw('POST', rowsBase(table), { rowId: rowId, data: data, permissions: permissions });
-  } else if (op === 'update') {
-    res = await aw('PATCH', rowUrl(table, rowId), { data: data });
-  } else {
-    res = await aw('DELETE', rowUrl(table, rowId));
+  const ctx = makeCtx(id, state, cached);
+
+  // Pass 2 — validate, in order, against each row's pre-operation state.
+  for (const o of batch) {
+    const key = o.table + '/' + o.rowId;
+    const current = state.pre.has(key) ? state.pre.get(key) : await cached(o.table, o.rowId);
+
+    const denial = await checkWrite({
+      table: o.table, op: o.op, rowId: o.rowId, data: o.data, current: current, ctx: ctx
+    });
+    if (denial) {
+      const e = new Error(denial);
+      e.status = 403;
+      e.code = 'permission-denied';
+      throw e;
+    }
+
+    if (o.op === 'delete') state.pre.set(key, null);
+    else if (o.op === 'create') state.pre.set(key, o.data);
+    else state.pre.set(key, current ? Object.assign({}, current, o.data) : o.data);
   }
 
-  if (res.status >= 300 && !(op === 'delete' && res.status === 404)) {
-    const e = new Error((res.json && res.json.message) || 'write failed (' + res.status + ')');
-    e.status = res.status;
-    e.type = res.json && res.json.type;
-    e.code = res.status === 409 ? 'already-exists' : 'invalid-argument';
-    throw e;
+  // Pass 3 — nothing was rejected, so write.
+  for (const o of batch) {
+    let res;
+    if (o.op === 'create') {
+      const permissions = modules.permissionsFor(o.table, o.data, o.rowId);
+      res = await aw('POST', rowsBase(o.table), { rowId: o.rowId, data: o.data, permissions: permissions });
+    } else if (o.op === 'update') {
+      res = await aw('PATCH', rowUrl(o.table, o.rowId), { data: o.data });
+    } else {
+      res = await aw('DELETE', rowUrl(o.table, o.rowId));
+    }
+
+    if (res.status >= 300 && !(o.op === 'delete' && res.status === 404)) {
+      const e = new Error((res.json && res.json.message) || 'write failed (' + res.status + ')');
+      e.status = res.status;
+      e.type = res.json && res.json.type;
+      e.code = res.status === 409 ? 'already-exists' : 'invalid-argument';
+      throw e;
+    }
   }
 
-  // Server-side follow-ups for the half of a Firestore batch the adapter
-  // cannot make atomic (the chat pacing stamp).
+  // Server-side follow-ups for the half of a batch no client-side sequence
+  // can make atomic (the chat pacing stamp).
   for (const fx of ctx.effects) {
     try {
       await aw('PATCH', rowUrl(fx.table, fx.rowId), { data: fx.data });
@@ -305,7 +362,7 @@ async function doWrite(payload, id) {
     }
   }
 
-  return { ok: true };
+  return { ok: true, count: batch.length };
 }
 
 // ── Runtime glue ───────────────────────────────────────────────────────

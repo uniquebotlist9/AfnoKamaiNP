@@ -69,7 +69,7 @@ function renderValid(code, meta) {
       </div>
       <div class="small muted" style="margin-top:4px">It will be pre-filled when you create your account.</div>
     </div>
-    ${meta && meta.handle ? `<p class="hint" style="margin-bottom:12px">Invited through <strong>afnokamai.web.app/ref/${esc(meta.handle)}</strong></p>` : ''}
+    ${meta && meta.handle ? `<p class="hint" style="margin-bottom:12px">Invited through <strong>afnokamainp.web.app/ref/${esc(meta.handle)}</strong></p>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
       <a class="btn btn-primary btn-lg" href="${signupUrl(code)}">${icon('user')} Create Account</a>
       <a class="btn ghost btn-lg" href="login.html">${icon('logout')} Login</a>

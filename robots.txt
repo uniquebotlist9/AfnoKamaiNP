@@ -4,4 +4,4 @@ Disallow: /admin/
 Disallow: /profile-setup.html
 Disallow: /verify-email.html
 
-Sitemap: https://afnokamai.web.app/sitemap.xml
+Sitemap: https://afnokamainp.web.app/sitemap.xml

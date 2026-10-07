@@ -106,7 +106,7 @@ export function isValidHandle(h) {
 
 /** Cleanest public URL compatible with the hosting rewrite /ref/** → ref.html */
 export function referralLink(code) {
-  return `https://afnokamai.web.app/ref/${encodeURIComponent(String(code || '').toUpperCase())}`;
+  return `https://afnokamainp.web.app/ref/${encodeURIComponent(String(code || '').toUpperCase())}`;
 }
 
 // ── Code capture (link → signup → profile setup) ─────────────────────

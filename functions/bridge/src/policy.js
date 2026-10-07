@@ -92,13 +92,23 @@ function asJson(v) {
 const norm = (v) => (v === undefined ? null : v);
 const same = (a, b) => JSON.stringify(norm(a)) === JSON.stringify(norm(b));
 
-/** Firestore's `changedKeys()`: fields whose value actually moves. */
+/**
+ * Firestore's `changedKeys()`, adapted for a partial payload.
+ *
+ * Firestore rules always see the WHOLE resulting document, so its changedKeys
+ * simply compares document to document. The adapter patches, so the payload
+ * only carries the fields the caller actually set — a field that is absent
+ * from the payload is one that keeps its current value and therefore has NOT
+ * changed. Comparing absent-to-present would report every untouched column as
+ * a mutation and make every legitimate update look like a rewrite.
+ */
 function changedKeys(current, incoming) {
   const out = [];
-  const keys = new Set([...Object.keys(current || {}), ...Object.keys(incoming || {})]);
-  for (const k of keys) {
+  const cur = current || {};
+  const data = incoming || {};
+  for (const k of Object.keys(data)) {
     if (k.charCodeAt(0) === 36) continue; // $id / $createdAt are not data
-    if (!same((current || {})[k], (incoming || {})[k])) out.push(k);
+    if (!same(cur[k], data[k])) out.push(k);
   }
   return out;
 }
@@ -158,8 +168,11 @@ POLICY.users = {
     const code = d.referralCode || '';
     if (code !== '') {
       if (!validCode(code)) return 'malformed referral code';
+      // Absent is fine — signup creates the mapping later in the SAME batch,
+      // and pass 1 of the proxy already folds that into what we read here.
+      // Present-and-mine is fine. Present-and-yours is the attack.
       const row = await ctx.read('referralCodes', code);
-      if (!row || row.userId !== ctx.uid) return 'referral code does not belong to this account';
+      if (row && row.userId !== ctx.uid) return 'that referral code belongs to another account';
     }
     return null;
   },

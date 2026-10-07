@@ -12,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const ORIGIN = 'https://afnokamai.web.app';
+const ORIGIN = 'https://afnokamainp.web.app';
 const SOCIAL = `${ORIGIN}/assets/social-preview.png`;
 const TAGLINE = 'Your Work. Your Kamai.';
 

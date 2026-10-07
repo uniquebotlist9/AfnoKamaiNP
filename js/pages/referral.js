@@ -176,7 +176,7 @@ function renderInviteCard() {
   }
 
   const link = referralLink(code);
-  const vanity = handle ? `https://afnokamai.web.app/ref/${encodeURIComponent(handle)}` : '';
+  const vanity = handle ? `https://afnokamainp.web.app/ref/${encodeURIComponent(handle)}` : '';
   inviteBody.innerHTML = `
     <div class="field" style="margin-bottom:12px">
       <span class="label" id="lbl-link">Referral link</span>

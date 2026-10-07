@@ -60,14 +60,14 @@ export function watchPlatformConfig(cb) {
   // Pure configuration: read exactly once. It changes rarely enough that
   // the next page load picking up a new value is indistinguishable from a
   // stream — and it means no page keeps even a single doc listener open.
-  const DEFAULTS = { holdDays: 3, minWithdrawalPaisa: 50000, supportEmail: 'support@afnokamai.web.app' };
+  const DEFAULTS = { holdDays: 3, minWithdrawalPaisa: 50000, supportEmail: 'support@afnokamainp.web.app' };
   getDoc(doc(db, 'config', 'platform'))
     .then((snap) => {
       const d = snap.data() || {};
       cb({
         holdDays: d.holdDays || 3,
         minWithdrawalPaisa: d.minWithdrawalPaisa || 50000,
-        supportEmail: d.supportEmail || 'support@afnokamai.web.app'
+        supportEmail: d.supportEmail || 'support@afnokamainp.web.app'
       });
     })
     .catch(() => cb({ ...DEFAULTS }));

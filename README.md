@@ -125,7 +125,7 @@ the browser — no server, no paid plan.
    automatically from the flows. Never configured? Everything still works;
    emails simply skip (they are decoration, never a security step).
 6. In the EmailJS dashboard, restrict the service to your domain
-   (`afnokamai.web.app`) so your free quota can't be borrowed elsewhere.
+   (`afnokamainp.web.app`) so your free quota can't be borrowed elsewhere.
 
 ⚠️ Only the **public key** goes in the config file — never the private key.
 

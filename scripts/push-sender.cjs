@@ -14,7 +14,11 @@
  * Flow: queued -> sending (claim) -> sent | skipped | failed
  */
 
-const admin = require('firebase-admin');
+// Appwrite TablesDB behind the firebase-admin Firestore API, so this sender's
+// claims, batches, reindex and sweeps keep their original logic and only the
+// transport changed. See the header of scripts/appwrite-admin.cjs for what is
+// and is not atomic now that the write path is Appwrite instead of Firestore.
+const admin = require('./appwrite-admin.cjs');
 const webpush = require('web-push');
 
 // ── Configuration ─────────────────────────────────────────────────────
@@ -25,7 +29,9 @@ const webpush = require('web-push');
 // line break becomes "Unexpected end of JSON input". A sender that cannot
 // run should say so in one sentence a maintainer can act on.
 const REQUIRED_ENV = [
-  'FIREBASE_SERVICE_ACCOUNT',
+  'APPWRITE_API_KEY',
+  'APPWRITE_PROJECT_ID',
+  'APPWRITE_DATABASE_ID',
   'VAPID_SUBJECT',
   'VAPID_PUBLIC_KEY',
   'VAPID_PRIVATE_KEY'
@@ -38,32 +44,11 @@ if (missingEnv.length) {
   process.exit(1);
 }
 
-let SERVICE_ACCOUNT;
-try {
-  SERVICE_ACCOUNT = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} catch (err) {
-  console.error('FATAL: FIREBASE_SERVICE_ACCOUNT is not valid JSON.');
-  console.error('Re-copy the entire contents of the service-account .json file as one value.');
-  console.error(`Parser said: ${err.message}`);
-  process.exit(1);
-}
-
-// A truncated paste parses as valid JSON far more often than you would
-// expect — it just loses keys. Confirm the ones cert() actually needs.
-const ACCOUNT_FIELDS = ['client_email', 'private_key', 'project_id'];
-const absentFields = ACCOUNT_FIELDS.filter((f) => !SERVICE_ACCOUNT[f]);
-if (absentFields.length) {
-  console.error(`FATAL: service-account JSON is missing ${absentFields.join(', ')}.`);
-  console.error('Almost always a truncated copy-paste — re-copy the whole file.');
-  process.exit(1);
-}
-
-const PROJECT_ID = process.env.FIRESTORE_PROJECT_ID
-  || SERVICE_ACCOUNT.project_id
-  || 'afnokamai';
+const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
+const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
 
 // ── Watchdog ──────────────────────────────────────────────────────────
-// The Firestore client applies no default gRPC deadline: a stalled socket
+// Neither client here applies a default request deadline: a stalled socket
 // does not throw, it waits. The first run of this sender hung for the full
 // ten-minute job timeout and printed nothing past its opening line, which
 // made it impossible to tell where it had stopped. This converts an opaque
@@ -73,9 +58,10 @@ const RUN_DEADLINE_MS = Number(process.env.SENDER_DEADLINE_MS) || 5 * 60 * 1000;
 let phase = 'startup';
 const watchdog = setTimeout(() => {
   console.error(`FATAL: sender still in phase "${phase}" after ${RUN_DEADLINE_MS}ms.`);
-  console.error('A Firestore or network call never returned — the SDK waits forever');
-  console.error('rather than timing out. Nothing was half-committed: every write below');
-  console.error('is either inside an atomic batch or guarded by a transaction claim.');
+  console.error('A database or network call never returned instead of timing out.');
+  console.error('Nothing was left half-committed: every write below is either an');
+  console.error('idempotent batch patch or guarded by a transaction claim, so the');
+  console.error('next run resumes the same queue from the same rows.');
   process.exit(2);
 }, RUN_DEADLINE_MS);
 
@@ -93,10 +79,7 @@ const MAX_ATTEMPTS = 3;
 const BATCH = 100;
 const CLAIM_TTL_MS = 10 * 60 * 1000; // a crashed run's claim expires
 
-admin.initializeApp({
-  credential: admin.credential.cert(SERVICE_ACCOUNT),
-  projectId: PROJECT_ID
-});
+admin.initializeApp({ projectId: PROJECT_ID });
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 

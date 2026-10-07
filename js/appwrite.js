@@ -218,11 +218,17 @@ export async function ensureAppwriteSession(user, force) {
 /**
  * The write proxy: the only way this app mutates a row.
  *
- * `payload` is `{ op, table, rowId, data }`; the Firebase ID token travels
- * in the body because the Appwrite execution API does not forward arbitrary
- * request headers reliably.
+ * `ops` is a list of `{ op, table, rowId, data }` — normally one entry, but a
+ * whole Firestore WriteBatch goes as a single call. That matters: rules such
+ * as the signup batch's `getAfter(referralCodes/{code})` evaluate the world
+ * AFTER the batch, so the Function has to see every operation before it
+ * validates any of them. It also means a batch is all-or-nothing, which
+ * Firestore's WriteBatch was and our sequential fallback was not.
+ *
+ * The Firebase ID token travels in the body because the Appwrite execution
+ * API does not forward arbitrary request headers reliably.
  */
-export async function executeWrite(payload) {
+export async function executeWrite(ops) {
   if (!APPWRITE_AUTH_FUNCTION_ID) {
     const err = new Error('Saving is unavailable right now. Please try again shortly.');
     err.code = 'failed-precondition';
@@ -233,6 +239,8 @@ export async function executeWrite(payload) {
     err.code = 'permission-denied';
     throw err;
   }
+  const list = Array.isArray(ops) ? ops : [ops];
+  const payload = { action: 'write', ops: list };
 
   let attempt = 0;
   for (;;) {

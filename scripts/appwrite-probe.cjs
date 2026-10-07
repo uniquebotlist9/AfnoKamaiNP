@@ -1,55 +1,40 @@
 /**
- * AfnoKamai — Firestore write-probe v3 (read-after-write).
+ * AfnoKamai — Appwrite write-probe (read-after-write).
  *
- * v2 left exactly one question open. It showed that every set(), update() and
- * batch.commit() never returns, while delete() — also a Commit — returns in
- * ~260ms. Two very different realities produce that signature:
+ * Replaces scripts/firestore-probe.cjs, which existed to answer a question
+ * that was specific to Firestore on the free tier: writes there can stall
+ * forever instead of failing, so the only way to tell "write blocked" from
+ * "response lost" is to write and then immediately read the same document
+ * back. This keeps that question, and the same contract the workflow depends
+ * on: print a line beginning with HUNG if an operation exceeds PROBE_CAP_MS,
+ * and exit 0 when every probe returned.
  *
- *   (a) WRITE BLOCKED  — the mutation never commits. Reads work, writes do
- *       nothing. Root cause is server-side (index build, quota, policy) and
- *       nothing in this repo can fix it.
- *
- *   (b) RESPONSE LOST  — the mutation commits fine but its reply never
- *       arrives, so the promise never settles. The database IS being written,
- *       and the sender is simply waiting for an acknowledgement that will
- *       not come.
- *
- * They look identical from the client. They differ on read-after-write: after
- * a set() that "hangs", does the document exist?
- *
- * This is the whole point of the probe, so each set is followed
- * immediately by a read of the same document, then a second read after a
- * grace period in case the write is merely delayed rather than lost.
- *
- * v2's cleanup results are re-examined here: v2's five deletes all succeeded,
- * but four of their target documents had been created by set() calls that
- * hung — so they may well have been deletes of documents that were never
- * created, which proves nothing. V7/V8 fix that by deleting a document this
- * probe has positively confirmed exists, then reading it back.
+ *   write blocked  -> reads succeed, the set never returns, document absent
+ *   response lost  -> the set never returns, document present after the fact
+ *   healthy        -> the set returns and the document reads back
  *
  * Exit: 0 = all probes returned; 1 = script failed; 2 = watchdog.
  */
 
-const admin = require('firebase-admin');
+// Same Firestore-shaped API as scripts/push-sender.cjs uses, backed by
+// Appwrite TablesDB. See scripts/appwrite-admin.cjs.
+const admin = require('./appwrite-admin.cjs');
 
 const CAP_MS = Number(process.env.PROBE_CAP_MS) || 15000;
 const GRACE_MS = Number(process.env.PROBE_GRACE_MS) || 4000;
 const OVERALL_MS = Number(process.env.PROBE_OVERALL_MS) || 240000;
-const PROJECT_ID = process.env.FIRESTORE_PROJECT_ID || 'afnokamai';
-const DOC = 'config/_q_readback';
+// Appwrite rejects rowIds that begin with an underscore, so this cannot reuse
+// the old Firestore probe's `_q_readback` name.
+const DOC = 'config/probe_readback';
 
-let SERVICE_ACCOUNT;
-try {
-  SERVICE_ACCOUNT = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} catch (err) {
-  console.error(`FATAL: service account is not valid JSON: ${err.message}`);
+const PROJECT_ID = process.env.APPWRITE_PROJECT_ID;
+const DATABASE_ID = process.env.APPWRITE_DATABASE_ID;
+if (!PROJECT_ID || !DATABASE_ID || !process.env.APPWRITE_API_KEY) {
+  console.error('FATAL: APPWRITE_PROJECT_ID, APPWRITE_DATABASE_ID and APPWRITE_API_KEY are all required.');
   process.exit(1);
 }
 
-admin.initializeApp({
-  credential: admin.credential.cert(SERVICE_ACCOUNT),
-  projectId: PROJECT_ID
-});
+admin.initializeApp({ projectId: PROJECT_ID });
 const db = admin.firestore();
 db.settings({ ignoreUndefinedProperties: true });
 
@@ -88,7 +73,7 @@ async function exists(label) {
   try {
     const snap = await db.doc(DOC).get();
     const present = snap.exists;
-    console.log(`${'OK'.padEnd(6)} ${label} -> ${present ? 'DOCUMENT EXISTS' : 'document absent'}  (${snap.readTime ? '' : ''}read ok)`);
+    console.log(`${'OK'.padEnd(6)} ${label} -> ${present ? 'DOCUMENT EXISTS' : 'document absent'}`);
     return present;
   } catch (err) {
     console.log(`${'ERROR'.padEnd(6)} ${label} — ${err.message}`);
@@ -97,21 +82,23 @@ async function exists(label) {
 }
 
 async function main() {
-  console.log(`probe v3 start: project=${PROJECT_ID} doc=${DOC}`);
+  console.log(`probe start: project=${PROJECT_ID} database=${DATABASE_ID} doc=${DOC}`);
   console.log('question: after a set() that never returns, does the document exist?');
 
   await attempt('V1 READ baseline (should be absent)', () => db.doc(DOC).get());
   const before = await exists('V2 READ baseline detail');
 
-  const write = await attempt('V3 SET  plain set', () =>
-    db.doc(DOC).set({ probe: 'v3', at: Date.now() }));
+  // Only columns config actually has: Appwrite rejects unknown ones, which
+  // would read as a write failure rather than the stall this probe is for.
+  const stamp = () => ({ updatedAt: new Date(), updatedBy: 'write-probe' });
+
+  const write = await attempt('V3 SET  plain set', () => db.doc(DOC).set(stamp()));
   const afterSet = await exists('V4 READ immediately after hung set');
 
   await sleep(GRACE_MS);
   const afterGrace = await exists(`V5 READ after ${GRACE_MS}ms grace`);
 
-  await attempt('V6 SET  same doc again', () =>
-    db.doc(DOC).set({ probe: 'v3-retry', at: Date.now() }));
+  await attempt('V6 SET  same doc again', () => db.doc(DOC).set(stamp()));
   const afterRetry = await exists('V7 READ after second hung set');
 
   await attempt('V8 DEL  document', () => db.doc(DOC).delete());
@@ -140,7 +127,7 @@ async function main() {
   }
 
   clearTimeout(overall);
-  console.log('probe v3 done');
+  console.log('probe done');
   process.exit(0);
 }
 

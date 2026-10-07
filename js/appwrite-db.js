@@ -589,57 +589,72 @@ export async function getDocs(target) {
 
 // ── Writes ────────────────────────────────────────────────────────────
 //
-// Every mutation below goes through executeWrite(), i.e. through the
-// Appwrite Function that authenticates the Firebase ID token and applies the
-// ported firestore.rules. Appwrite's `create` grant is evaluated against the
-// table alone, so no table or row hands a browser a write grant — if it did,
-// one user could overwrite another user's rows. The Function therefore
-// stamps $permissions itself, and `withPermissions` no longer decides that.
-async function createDoc(ref, payload, withPermissions) {
-  const data = encodeData(ref.table, payload);
-  return executeWrite({ op: 'create', table: ref.table, rowId: ref.documentId, data });
+// Every mutation goes through executeWrite(), i.e. through the Appwrite
+// Function that authenticates the Firebase ID token and applies the ported
+// firestore.rules. Appwrite's `create` grant is evaluated against the table
+// alone, so no table or row hands a browser a write grant — if it did, one
+// user could overwrite another user's rows. The Function therefore stamps
+// $permissions itself.
+//
+// Writing happens in two phases: resolveWrite() performs the reads Firestore
+// would have done (does this document exist? what does it look like right
+// now?) and produces a plain wire operation; executeWrite() then ships a
+// whole group of them in one call. The Function validates the group against
+// its post-group state before touching anything, which is what keeps
+// `getAfter(...)` rules correct when a batch creates a row that an earlier
+// operation in the same batch reads (signup writes users before
+// referralCodes, exactly that shape).
+
+/** Read a row while resolving a write, honouring earlier ops in the group. */
+async function readForWrite(ref, group) {
+  const key = ref.table + '/' + ref.documentId;
+  if (group && group.overlay.has(key)) return group.overlay.get(key);
+  return readRaw(ref);
 }
 
-async function patchDoc(ref, data) {
-  return executeWrite({ op: 'update', table: ref.table, rowId: ref.documentId, data });
+function noteOverlay(group, ref, after) {
+  if (group) group.overlay.set(ref.table + '/' + ref.documentId, after);
 }
 
-async function applyWrite(op) {
+async function resolveWrite(op, group) {
   const { ref } = op;
+
   if (op.kind === 'delete') {
-    await executeWrite({ op: 'delete', table: ref.table, rowId: ref.documentId, data: {} })
-      .catch((e) => { if (e.code !== 'not-found') throw e; });
-    return;
+    noteOverlay(group, ref, null);
+    return { op: 'delete', table: ref.table, rowId: ref.documentId, data: {} };
   }
 
   const payload = { ...op.data, ...(ref.inject || {}) };
   const dynamic = needsReadBeforeWrite(payload);
+  const raw = await readForWrite(ref, group);
 
   if (op.kind === 'update') {
     if (dynamic) {
-      const raw = await readRaw(ref);
       if (!raw) {
         const e = new Error('Cannot update a document that does not exist.');
         e.code = 'not-found';
         throw e;
       }
-      await patchDoc(ref, applyUpdate(ref.table, raw, payload));
-      return;
+      const data = applyUpdate(ref.table, raw, payload);
+      noteOverlay(group, ref, Object.assign({}, raw, data));
+      return { op: 'update', table: ref.table, rowId: ref.documentId, data };
     }
-    await patchDoc(ref, payload);
-    return;
+    const data = encodeData(ref.table, payload);
+    noteOverlay(group, ref, Object.assign({}, raw || {}, data));
+    return { op: 'update', table: ref.table, rowId: ref.documentId, data };
   }
 
   // setDoc — read first so a full replace can clear fields it omits, the way
   // Firestore's setDoc() does.
-  const raw = await readRaw(ref);
   if (!raw) {
-    await createDoc(ref, payload, true);
-    return;
+    const data = encodeData(ref.table, payload);
+    noteOverlay(group, ref, data);
+    return { op: 'create', table: ref.table, rowId: ref.documentId, data };
   }
   if (op.merge) {
-    await patchDoc(ref, dynamic ? applyUpdate(ref.table, raw, payload) : payload);
-    return;
+    const data = dynamic ? applyUpdate(ref.table, raw, payload) : encodeData(ref.table, payload);
+    noteOverlay(group, ref, Object.assign({}, raw, data));
+    return { op: 'update', table: ref.table, rowId: ref.documentId, data };
   }
   // Full replace: fields the payload omits are cleared, and nested paths
   // ('stats.assigned') count as touching their owning field.
@@ -649,7 +664,33 @@ async function applyWrite(op) {
     if (key.charCodeAt(0) === 36) continue;
     if (!touched.has(key)) replaced[key] = null;
   }
-  await patchDoc(ref, replaced);
+  const after = Object.assign({}, raw);
+  for (const key of Object.keys(replaced)) {
+    if (key.charCodeAt(0) === 36) continue;
+    after[key] = replaced[key];
+  }
+  noteOverlay(group, ref, after);
+  return { op: 'update', table: ref.table, rowId: ref.documentId, data: replaced };
+}
+
+/** Start a group of operations that will be validated and applied together. */
+function beginGroup() {
+  return { overlay: new Map() };
+}
+
+/** Ship a resolved group through the write proxy. */
+async function commitGroup(resolved) {
+  if (!resolved.length) return;
+  await executeWrite(resolved);
+}
+
+async function applyWrite(op) {
+  if (op.kind === 'delete') {
+    const resolved = await resolveWrite(op, null);
+    await executeWrite([resolved]).catch((e) => { if (e.code !== 'not-found') throw e; });
+    return;
+  }
+  await commitGroup([await resolveWrite(op, null)]);
 }
 
 export async function setDoc(ref, data, options) {
@@ -687,10 +728,15 @@ export function writeBatch() {
       return batch;
     },
     async commit() {
-      // Not atomic: Firestore's WriteBatch was. Operations are applied in
-      // the order they were queued so the outcome is deterministic, and
-      // callers that need atomicity use runTransaction() instead.
-      for (const op of ops) await applyWrite(op);
+      // Resolved against its own writes first (so an operation that reads a
+      // document an earlier operation in the batch created behaves like
+      // Firestore's getAfter), then sent as ONE call: the Function rejects
+      // the whole batch if any operation fails, which is the atomicity
+      // Firestore's WriteBatch had and a sequential loop could not.
+      const group = beginGroup();
+      const resolved = [];
+      for (const op of ops) resolved.push(await resolveWrite(op, group));
+      await commitGroup(resolved);
     }
   };
   return batch;
@@ -756,7 +802,13 @@ export async function runTransaction(_db, fn, options) {
     }
 
     try {
-      for (const op of ops) await applyWrite(op);
+      // Same two-phase shape as a batch: resolve against the transaction's
+      // own writes, then ship them as one validated group so a failure on the
+      // third operation cannot leave the first two applied.
+      const group = beginGroup();
+      const resolved = [];
+      for (const op of ops) resolved.push(await resolveWrite(op, group));
+      await commitGroup(resolved);
       return result;
     } catch (e) {
       if (e.code !== 'resource-exhausted' && e.code !== 'unavailable' && e.code !== 'failed-precondition') throw e;

@@ -6,17 +6,20 @@ name: Send queued notifications
 # account, so nothing inside the app can hold the VAPID private key. This
 # workflow is that missing sender. It runs on the free GitHub Actions tier
 # (unlimited minutes for public repositories) and needs no deploy step of its
-# own — pushes still reach users via Firestore, which is written by the app.
+# own — pushes still reach users via Appwrite, which is written by the app.
 #
 # GitHub's minimum schedule granularity is 5 minutes, so a background push
 # arrives within ~5 minutes of the event. Foreground updates are unaffected:
-# those are real-time via Firestore listeners.
+# those are real-time via the app's own polling.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
-#   FIREBASE_SERVICE_ACCOUNT  service-account JSON for Firestore read/write
-#   VAPID_PUBLIC_KEY          the half already shipped in js/firebase-config.js
-#   VAPID_PRIVATE_KEY         the matching private half
-#   VAPID_SUBJECT             mailto: you@address for abuse contact
+#   APPWRITE_API_KEY           server-only key for the Appwrite tables this
+#                             sender reads and writes
+#   APPWRITE_PROJECT_ID        the Appwrite project id
+#   APPWRITE_DATABASE_ID       the TablesDB database id
+#   VAPID_PUBLIC_KEY           the half already shipped in js/firebase-config.js
+#   VAPID_PRIVATE_KEY          the matching private half
+#   VAPID_SUBJECT              mailto: you@address for abuse contact
 
 on:
   schedule:
@@ -24,7 +27,7 @@ on:
   workflow_dispatch: {}
 
 # Least privilege: this job only reads the checkout. Every database access
-# goes through the service account below, never through the repo token.
+# goes through the Appwrite API key below, never through the repo token.
 permissions:
   contents: read
 
@@ -52,18 +55,22 @@ jobs:
 
       # Fail soft, loudly, and only once — until the secrets are added this
       # would otherwise post ~288 red runs a day for a configuration problem
-      # that a scheduled workflow cannot fix by itself. All four are checked,
+      # that a scheduled workflow cannot fix by itself. All six are checked,
       # not just the pair needed to boot: a half-configured repo that skipped
-      # on two and died on the other two would be worse than skipping on all.
+      # on two and died on the other four would be worse than skipping on all.
       - name: Check secrets are configured
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
         run: |
           missing=""
-          [ -z "$FIREBASE_SERVICE_ACCOUNT" ] && missing="$missing FIREBASE_SERVICE_ACCOUNT"
+          [ -z "$APPWRITE_API_KEY" ] && missing="$missing APPWRITE_API_KEY"
+          [ -z "$APPWRITE_PROJECT_ID" ] && missing="$missing APPWRITE_PROJECT_ID"
+          [ -z "$APPWRITE_DATABASE_ID" ] && missing="$missing APPWRITE_DATABASE_ID"
           [ -z "$VAPID_PUBLIC_KEY" ] && missing="$missing VAPID_PUBLIC_KEY"
           [ -z "$VAPID_PRIVATE_KEY" ] && missing="$missing VAPID_PRIVATE_KEY"
           [ -z "$VAPID_SUBJECT" ] && missing="$missing VAPID_SUBJECT"
@@ -76,45 +83,43 @@ jobs:
 
       - name: Install sender dependencies
         if: env.configured == 'true'
-        run: npm install --no-save --no-audit --no-fund firebase-admin@12 web-push@3
+        run: npm install --no-save --no-audit --no-fund web-push@3
 
-      # The sender's Firestore calls wait forever instead of timing out, so if
-      # it stalls the useful question is whether the runner can reach Google's
+      # The sender's Appwrite calls wait forever instead of timing out, so if
+      # it stalls the useful question is whether the runner can reach the
       # endpoint at all. Ten seconds of curl answers that before the 10-minute
       # job timeout gets a chance to be the only thing we learn.
       - name: Preflight connectivity
         if: env.configured == 'true'
         run: |
           echo "--- DNS ---"
-          getent hosts firestore.googleapis.com || echo "DNS lookup FAILED"
+          getent hosts sgp.cloud.appwrite.io || echo "DNS lookup FAILED"
           echo "--- HTTPS (10s cap) ---"
           curl -sS -o /dev/null \
-            -w 'firestore.googleapis.com -> HTTP %{http_code} in %{time_total}s\n' \
-            --max-time 10 https://firestore.googleapis.com/ \
+            -w 'sgp.cloud.appwrite.io -> HTTP %{http_code} in %{time_total}s\n' \
+            --max-time 10 https://sgp.cloud.appwrite.io/v1/health \
             || echo "unreachable: curl exited $?"
 
-      # Two runs stalled on Firestore writes. This proves the point in
-      # seconds rather than inferring it from a five-minute watchdog: each
-      # operation is raced against a hard deadline.
+      # Two runs stalled on writes. This proves the point in seconds rather
+      # than inferring it from a five-minute watchdog: each operation is raced
+      # against a hard deadline.
       #
-      # A hung write is deliberately a WARNING and not a failure. Exhausting
-      # the free-tier write quota makes Firestore retry RESOURCE_EXHAUSTED
-      # instead of surfacing it, so the promise never settles and it looks
-      # exactly like an outage — but it is neither our bug nor fixable from
-      # here, and it clears itself at midnight Pacific. Failing red every
-      # five minutes for thirteen hours would post ~150 failed runs and teach
-      # everyone to ignore the ones that matter. The annotation still shows
-      # on every run, and the next run after quota resets recovers on its own.
-      - name: Probe Firestore read/write
+      # A hung write is deliberately a WARNING and not a failure. A stalled
+      # write is neither our bug nor fixable from here, and it clears itself;
+      # failing red every five minutes would post ~150 failed runs and teach
+      # everyone to ignore the ones that matter. The annotation still shows on
+      # every run, and the next run after the stall recovers on its own.
+      - name: Probe Appwrite read/write
         if: env.configured == 'true'
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIRESTORE_PROJECT_ID: afnokamainp
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
         run: |
-          out=$(node scripts/firestore-probe.cjs 2>&1) || true
+          out=$(node scripts/appwrite-probe.cjs 2>&1) || true
           echo "$out"
           if printf '%s\n' "$out" | grep -q '^HUNG'; then
-            echo "::warning title=Firestore not accepting writes::No write committed within the deadline while reads succeeded. Free-tier write quota exhaustion is the usual cause and it resets at midnight Pacific. Queued notifications are retained and will be delivered once writes are accepted."
+            echo "::warning title=Appwrite not accepting writes::No write committed within the deadline while reads succeeded. Queued notifications are retained and will be delivered once writes are accepted."
             echo "writable=false" >> "$GITHUB_ENV"
           else
             echo "writable=true" >> "$GITHUB_ENV"
@@ -123,12 +128,12 @@ jobs:
       - name: Send queued notifications
         if: env.configured == 'true' && env.writable == 'true'
         env:
-          # Service account used ONLY for Firestore reads/writes on the
-          # collections this sender touches. Security rules still govern app
-          # clients; this identity is server-side and never ships to a
-          # browser, and it is never logged.
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          FIRESTORE_PROJECT_ID: afnokamainp
+          # API key used ONLY for the Appwrite tables this sender touches.
+          # Security rules still govern app clients; this identity is
+          # server-side and never ships to a browser, and it is never logged.
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
           VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}

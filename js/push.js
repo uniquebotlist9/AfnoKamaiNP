@@ -148,6 +148,15 @@ function docIdFor(uid) {
  *
  * @returns {Promise<'none'|'granted'|'denied'|'unsupported'|'synced'>}
  */
+/** Byte-compare two key buffers (ArrayBuffer vs Uint8Array). */
+function sameKey(a, b) {
+  const av = a instanceof Uint8Array ? a : new Uint8Array(a || []);
+  const bv = b instanceof Uint8Array ? b : new Uint8Array(b || []);
+  if (av.byteLength !== bv.byteLength) return false;
+  for (let i = 0; i < av.byteLength; i++) if (av[i] !== bv[i]) return false;
+  return true;
+}
+
 export async function syncSubscription({ prompt = false } = {}) {
   if (!pushSupported()) return 'unsupported';
 
@@ -171,6 +180,14 @@ export async function syncSubscription({ prompt = false } = {}) {
     if (!reg) return 'error'; // no worker on this origin (e.g. localhost)
 
     let sub = await reg.pushManager.getSubscription();
+
+    // A VAPID rotation leaves the old subscription bound to the retired key,
+    // and the push service rejects pushes signed with the new one. Re-subscribe
+    // under the current key so recovery needs no user action.
+    if (sub && !sameKey(sub.applicationServerKey, urlBase64ToUint8Array(VAPID_PUBLIC_KEY))) {
+      await sub.unsubscribe().catch(() => {});
+      sub = null;
+    }
 
     if (!sub) {
       sub = await reg.pushManager.subscribe({

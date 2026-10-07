@@ -17,6 +17,7 @@ import { requireAppAccess, doLogout, ensureConfigured, redirectSignal, isRedirec
 import { icon, logo } from './icons.js';
 import { esc, fmtRelative, initials } from './utils.js';
 import { initOfflineBanner, emptyState, renderMountFailure, modal, toast, withDeadline, boundBatch, WRITE_DEADLINE_MS } from './ui.js';
+import { subscribeWhileVisible } from './listen.js';
 import { initTheme, mountThemeControl } from './theme.js';
 import { initInstallPopup } from './install-popup.js';
 import { openNotificationPanel } from './notification-center.js';
@@ -319,8 +320,19 @@ function setupNotifications(layout, uid) {
   );
   const shownPopups = loadShownPopups();
   let firstSnapshot = true;
+  // Re-attaching after the tab returns counts as a fresh first snapshot, so
+  // the batch rules below still apply then (newest urgent popup, staggered
+  // toasts) instead of opening one modal per notification missed while away.
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) firstSnapshot = true;
+  });
 
-  onSnapshot(qUnread, (snap) => {
+  // Gated on visibility: this listener mounts on EVERY page, so a
+  // backgrounded tab is exactly where a permanent stream wastes reads on a
+  // badge nobody can see. Hidden → detached; returning to the tab
+  // re-attaches and the snapshot below repaints the badge and surfaces any
+  // priority items that arrived while the user was away.
+  subscribeWhileVisible(qUnread, (snap) => {
     const n = snap.size;
     unreadCount = n;
     updateTabTitle();
@@ -398,6 +410,11 @@ function startHeartbeat(uid) {
   window.addEventListener('beforeunload', () => { try { beat(); } catch (_) {} });
 }
 
+// Deliberately NOT visibility-gated: this is the one subscription that must
+// fire while the page sits open — an admin flipping maintenance has to kick
+// users to the maintenance page immediately, not on their next tab focus.
+// It watches a single config doc that changes a few times a year, so it
+// costs nothing to keep attached.
 function watchMaintenance(profile) {
   onSnapshot(doc(db, 'config', 'maintenance'), (snap) => {
     const m = snap.data();

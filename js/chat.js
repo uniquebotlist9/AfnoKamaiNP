@@ -2,7 +2,7 @@
 import { db, isConfigured } from './firebase.js';
 import {
   doc, getDoc, collection, query, where, orderBy, limit,
-  onSnapshot, serverTimestamp, increment,
+  serverTimestamp, increment,
   setDoc as fsSetDoc, updateDoc as fsUpdateDoc,
   deleteDoc as fsDeleteDoc, writeBatch as fsWriteBatch
 } from 'firebase/firestore';
@@ -22,6 +22,12 @@ import { esc, safeMediaUrl, fmtDateTime, fmtTime, fmtRelative, fmtBytes } from '
 import { icon } from './icons.js';
 import { toast, confirmDialog, withDeadline, boundBatch, WRITE_DEADLINE_MS } from './ui.js';
 import { createNotification } from './notify.js';
+import { subscribeWhileVisible } from './listen.js';
+
+// Every subscription in this module runs through subscribeWhileVisible():
+// chat is only useful while it is on screen, so a backgrounded chat tab
+// holds no Firestore listeners at all. Coming back re-attaches them and the
+// first snapshot repaints the thread — see js/listen.js.
 
 // Media is stored INLINE in Firestore (base64 in the message document).
 // Firestore documents cap at 1 MiB, so attachments must stay small.
@@ -75,7 +81,7 @@ export async function mountChat({ root, role, selfUid, selfName }) {
   const targetUid = new URLSearchParams(location.search).get('uid');
 
   const qConvs = query(collection(db, 'conversations'), orderBy('lastMessageAt', 'desc'), limit(100));
-  onSnapshot(qConvs, (snap) => {
+  subscribeWhileVisible(qConvs, (snap) => {
     allConvs = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     renderConvList();
     if (targetUid && allConvs.some((c) => c.id === targetUid) && !activeCleanup) openConversation(targetUid);
@@ -296,11 +302,11 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   // ── presence header ──
   let presenceUnsub = null;
   if (role === 'user') {
-    presenceUnsub = onSnapshot(doc(db, 'config', 'availability'), (snap) => {
+    presenceUnsub = subscribeWhileVisible(doc(db, 'config', 'availability'), (snap) => {
       presenceEl.innerHTML = presenceHtml(adminPresence(snap.data() || {}));
     }, () => {});
   } else {
-    presenceUnsub = onSnapshot(doc(db, 'users', cid), (snap) => {
+    presenceUnsub = subscribeWhileVisible(doc(db, 'users', cid), (snap) => {
       const u = snap.data() || {};
       const last = u.lastActiveAt;
       const online = last && (Date.now() - last.toMillis()) < 5 * 60 * 1000;
@@ -318,7 +324,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       orderBy('createdAt', 'desc'),
       limit(pageLimit)
     );
-    return onSnapshot(q, (snap) => {
+    return subscribeWhileVisible(q, (snap) => {
       latestMsgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).reverse();
       hasOlder = snap.size === pageLimit;
       // Show a prominent banner for new admin messages while the user is
@@ -370,7 +376,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   // client-side — the query stays on the existing (userId, read) index.
   let notifUnsub = null;
   if (role === 'user') {
-    notifUnsub = onSnapshot(
+    notifUnsub = subscribeWhileVisible(
       query(
         collection(db, 'notifications'),
         where('userId', '==', cid),
@@ -485,7 +491,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
 
   // ── typing indicator ──
   let convTypingFresh = false;
-  const convUnsub = onSnapshot(doc(db, 'conversations', cid), (snap) => {
+  const convUnsub = subscribeWhileVisible(doc(db, 'conversations', cid), (snap) => {
     const c = snap.data() || {};
     const otherTyping = role === 'user' ? c.adminTyping : c.userTyping;
     const otherTypingAt = role === 'user' ? c.adminTypingAt : c.userTypingAt;

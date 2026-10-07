@@ -1,7 +1,7 @@
 // ─── Earn: task marketplace + my assignments ─────────────────────────
 import { db } from '../firebase.js';
 import {
-  collection, query, where, orderBy, limit, getDocs, onSnapshot, doc, getDoc
+  collection, query, where, orderBy, limit, getDocs, doc, getDoc, Timestamp
 } from 'firebase/firestore';
 import { mountShell, renderRestriction } from '../shell.js';
 import { esc, fmtNPR, fmtRelative, countdownUntil, fmtDateTime, fmtDate, DIFFICULTY } from '../utils.js';
@@ -33,6 +33,7 @@ content.innerHTML = `
     <div class="card">
       <div class="card-head">
         <div><h3>My tasks</h3><div class="sub">Your requested and assigned tasks</div></div>
+        <button class="btn ghost btn-sm" id="refresh-lists">${icon('refresh')} Refresh</button>
       </div>
       <div id="assignments">${skeletonRows(2)}</div>
     </div>
@@ -63,27 +64,143 @@ content.innerHTML = `
     </div>
   </section>`;
 
-// ── My assignments (real-time) ──
+// ── My tasks: one cached read instead of a permanent listener ──
+// This list used to stream via onSnapshot(). Task assignments don't change
+// faster than a human can act on them, so it is now a single bounded
+// getDocs() that paints instantly from sessionStorage and revalidates in
+// the background: pull-to-refresh (a page reload) and the Refresh button
+// just re-run it, and returning to the tab revalidates if the data is
+// older than 30 s. A listener would have streamed every change forever.
+const CACHE_NS = 'ak_earn_v1';
+const CACHE_MAX_AGE_MS = 30 * 60 * 1000; // never paint a list staler than this
+const REVALIDATE_AFTER_MS = 30 * 1000;    // refresh-on-return threshold
+
+const lastFetch = { assignments: 0, tasks: 0 };
+
+// JSON flattens Firestore Timestamps, which the render code needs as real
+// instances (.toMillis / fmtRelative). The stringify replacer marks them and
+// the parse reviver rebuilds them, so cached docs behave like fresh ones.
+// Keyed by uid: logging out and into another account in the same tab must
+// never paint the previous user's tasks, even for a frame.
+function cacheKey(key) { return `${CACHE_NS}:${user.uid}:${key}`; }
+
+function cachePut(key, docs) {
+  try {
+    const raw = JSON.stringify(
+      { at: Date.now(), docs },
+      (_, v) => (v && typeof v === 'object' && typeof v.toMillis === 'function' ? { __t: v.toMillis() } : v)
+    );
+    sessionStorage.setItem(cacheKey(key), raw);
+  } catch (_) { /* quota/private mode: the cache is an optimisation only */ }
+}
+
+function reviveStamp(v) {
+  if (!v || typeof v !== 'object') return v;
+  if (typeof v.__t === 'number') return Timestamp.fromMillis(v.__t);
+  // Fallback: a Timestamp that serialised through its own toJSON().
+  if (typeof v.seconds === 'number' && typeof v.nanoseconds === 'number' && Object.keys(v).length === 2) {
+    return Timestamp.fromMillis(v.seconds * 1000 + Math.round(v.nanoseconds / 1e6));
+  }
+  return v;
+}
+
+function cacheGet(key) {
+  try {
+    const raw = sessionStorage.getItem(cacheKey(key));
+    if (!raw) return null;
+    const entry = JSON.parse(raw, (_, v) => reviveStamp(v));
+    if (!entry || !Array.isArray(entry.docs) || Date.now() - entry.at > CACHE_MAX_AGE_MS) return null;
+    return entry;
+  } catch (_) { return null; }
+}
+
 const qMine = query(
   collection(db, 'taskAssignments'),
   where('userId', '==', user.uid),
   orderBy('requestedAt', 'desc'),
   limit(20)
 );
-onSnapshot(qMine, (snap) => {
+
+let assignmentsPainted = false;
+let assignmentsFetching = null;
+let loadSeq = 0; // generation: a superseded read never renders or caches
+
+function renderAssignments(items) {
   const el = content.querySelector('#assignments');
-  if (snap.empty) {
+  if (!items.length) {
     el.innerHTML = emptyState({
       icon: 'briefcase',
       title: 'No tasks requested yet',
       message: 'Pick a task below and tap "Request Task" to get started.'
     });
-    return;
+  } else {
+    el.innerHTML = items.map((a) => renderAssignment(a.id, a)).join('');
+    wireAssignmentActions(el);
   }
-  el.innerHTML = snap.docs.map((d) => renderAssignment(d.id, d.data())).join('');
-  wireAssignmentActions(el);
-}, () => {
-  content.querySelector('#assignments').innerHTML = emptyState({ icon: 'alert', title: 'Could not load your tasks', message: 'Please refresh the page.' });
+  assignmentsPainted = true;
+}
+
+/**
+ * One bounded read of "my tasks".
+ *
+ * Non-forced calls paint from cache first and skip entirely when the data
+ * is under 30 s old — that is what makes pull-to-refresh cheap and lets the
+ * tab revalidate on return without a listener. `force` always fetches and
+ * skips the cached paint: used right after an action, when the user must
+ * see the new status rather than the stale list it replaces.
+ */
+function loadAssignments({ force = false } = {}) {
+  if (!force) {
+    if (assignmentsFetching) return assignmentsFetching;
+    if (assignmentsPainted && Date.now() - lastFetch.assignments < REVALIDATE_AFTER_MS) return Promise.resolve();
+  }
+  if (!force) {
+    const cached = cacheGet('assignments');
+    if (cached) renderAssignments(cached.docs);
+    else if (!assignmentsPainted) content.querySelector('#assignments').innerHTML = skeletonRows(2);
+  }
+  const seq = ++loadSeq;
+  assignmentsFetching = (async () => {
+    try {
+      const snap = await getDocs(qMine);
+      if (seq !== loadSeq) return; // a newer read superseded this one
+      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      lastFetch.assignments = Date.now();
+      cachePut('assignments', items);
+      renderAssignments(items);
+    } catch (_) {
+      if (seq !== loadSeq) return;
+      if (!assignmentsPainted) {
+        content.querySelector('#assignments').innerHTML = emptyState({ icon: 'alert', title: 'Could not load your tasks', message: 'Please refresh the page.' });
+      }
+    } finally {
+      if (seq === loadSeq) assignmentsFetching = null;
+    }
+  })();
+  return assignmentsFetching;
+}
+
+loadAssignments();
+
+// ── Refresh affordances ──
+// The button is the desktop equivalent of pull-to-refresh: both just re-run
+// the two cached reads, which is exactly the refresh path that replaces the
+// old listener.
+content.querySelector('#refresh-lists').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  btnBusy(btn, true, 'Refreshing…');
+  await Promise.all([loadAssignments({ force: true }), loadTasks({ force: true })]);
+  btnBusy(btn, false);
+  toast('Task lists refreshed.', { type: 'success' });
+});
+
+// Returning to the tab revalidates anything older than 30 s — the catch-up a
+// listener used to provide, for one bounded query instead of a permanent
+// stream that billed every change.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  loadAssignments();
+  loadTasks();
 });
 
 function renderAssignment(id, a) {
@@ -166,6 +283,10 @@ async function submitFlow(assignmentId) {
     try {
       await submitTask({ assignmentId, note, evidenceNote: evidence });
       m.close();
+      // The cached list above still shows the old status — force a re-read
+      // so "Submitted for review" appears without waiting for the next
+      // manual refresh.
+      loadAssignments({ force: true });
       toast('Submitted for review. An administrator will check your work shortly.', { type: 'success', title: 'Task submitted' });
     } catch (err) {
       btnBusy(btn, false);
@@ -176,26 +297,61 @@ async function submitFlow(assignmentId) {
 
 // ── Available tasks with search / filters / sorting ──
 let allTasks = [];
+let tasksPainted = false;
+let tasksFetching = null;
+let tasksSeq = 0;
 const grid = content.querySelector('#tasks-grid');
 content.querySelector('#t-cat').innerHTML = '<option value="">All categories</option>';
 
-async function loadTasks() {
-  try {
-    const snap = await getDocs(query(
-      collection(db, 'tasks'),
-      where('status', 'in', ['published', 'full']),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    ));
-    allTasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    const cats = [...new Set(allTasks.map((t) => t.category).filter(Boolean))];
-    content.querySelector('#t-cat').innerHTML =
-      '<option value="">All categories</option>' +
-      cats.map((c) => `<option>${esc(c)}</option>`).join('');
-    applyFilters();
-  } catch (_) {
-    grid.innerHTML = emptyState({ icon: 'alert', title: 'Could not load tasks', message: 'Please refresh the page.' });
+/**
+ * One bounded read of the published task list — same cache contract as
+ * loadAssignments(): paint from cache, revalidate when stale, `force` skips
+ * the stale paint. The category dropdown is rebuilt from the fresh data but
+ * keeps the user's current selection so a background revalidation can't
+ * silently clear an active filter.
+ */
+function loadTasks({ force = false } = {}) {
+  if (!force) {
+    if (tasksFetching) return tasksFetching;
+    if (tasksPainted && Date.now() - lastFetch.tasks < REVALIDATE_AFTER_MS) return Promise.resolve();
+    const cached = cacheGet('tasks');
+    if (cached) renderTasks(cached.docs);
+    else if (!tasksPainted) grid.innerHTML = skeletonRows(2, 120);
   }
+  const seq = ++tasksSeq;
+  tasksFetching = (async () => {
+    try {
+      const snap = await getDocs(query(
+        collection(db, 'tasks'),
+        where('status', 'in', ['published', 'full']),
+        orderBy('createdAt', 'desc'),
+        limit(50)
+      ));
+      if (seq !== tasksSeq) return;
+      allTasks = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      lastFetch.tasks = Date.now();
+      cachePut('tasks', allTasks);
+      renderTasks(allTasks);
+    } catch (_) {
+      if (seq !== tasksSeq) return;
+      if (!tasksPainted) grid.innerHTML = emptyState({ icon: 'alert', title: 'Could not load tasks', message: 'Please refresh the page.' });
+    } finally {
+      if (seq === tasksSeq) tasksFetching = null;
+    }
+  })();
+  return tasksFetching;
+}
+
+function renderTasks(items) {
+  const catSel = content.querySelector('#t-cat');
+  const selected = catSel.value;
+  const cats = [...new Set(items.map((t) => t.category).filter(Boolean))];
+  catSel.innerHTML =
+    '<option value="">All categories</option>' +
+    cats.map((c) => `<option>${esc(c)}</option>`).join('');
+  if ([...catSel.options].some((o) => o.value === selected)) catSel.value = selected;
+  tasksPainted = true;
+  applyFilters();
 }
 
 function applyFilters() {
@@ -269,6 +425,10 @@ async function doRequest(taskId, btn) {
   try {
     await requestTask({ taskId });
     toast('Task request sent — opening chat with the administrator.', { type: 'success', title: 'Request sent' });
+    // Both lists just changed server-side (new assignment, slot consumed):
+    // refresh them now so they are current when the user comes back from chat.
+    loadAssignments({ force: true });
+    loadTasks({ force: true });
     const tSnap = await getDoc(doc(db, 'tasks', taskId)).catch(() => null);
     const title = tSnap?.data()?.title || 'a task';
     // Take the user straight to the admin chat to follow the request.

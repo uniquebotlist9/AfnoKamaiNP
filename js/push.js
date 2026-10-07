@@ -321,7 +321,10 @@ export async function disablePush(targetDocId = null) {
   try {
     if (!targetDocId) {
       const snap = await getDocs(
-        query(collection(db, 'pushSubscriptions'), where('userId', '==', user.uid))
+        // Bounded by the device cap: nothing more than MAX_PUSH_DEVICES
+        // subscription docs can exist for one account, so this delete loop
+        // can never scan an unbounded set.
+        query(collection(db, 'pushSubscriptions'), where('userId', '==', user.uid), limit(MAX_PUSH_DEVICES))
       );
       for (const d of snap.docs) await deleteDoc(d.ref).catch(() => {});
     } else {

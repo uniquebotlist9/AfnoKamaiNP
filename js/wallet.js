@@ -1,29 +1,77 @@
 // ─── Wallet + transaction helpers ────────────────────────────────────
 import { db } from './firebase.js';
 import {
-  doc, onSnapshot, collection, query, where, orderBy, limit,
+  doc, collection, query, where, orderBy, limit,
   startAfter, getDocs, getDoc
 } from 'firebase/firestore';
 import { TX_TYPE, TX_STATUS } from './utils.js';
 
+// ── One-shot reads that re-run when the tab comes back ──────────────
+// These two were onSnapshot() streams. Neither value needs real-time
+// delivery: the balance moves when something happens (a task is approved,
+// a withdrawal is sent) and the user is looking at the page when it does.
+// One getDoc() now paints the page, and re-runs when the tab returns to
+// the foreground — a backgrounded tab holds no listener at all.
+const EMPTY_WALLET = {
+  availablePaisa: 0, holdPaisa: 0, pendingWithdrawalPaisa: 0,
+  earnedPaisa: 0, withdrawnPaisa: 0
+};
+
+/**
+ * Runs `read` immediately and again whenever the tab becomes visible or
+ * regains focus. `read(isActive)` is handed a predicate so a getDoc that
+ * resolves after teardown stays silent. The 1s floor collapses the
+ * visibilitychange + focus pair an alt-tab produces into a single read.
+ * Returns a cleanup function (same contract the old listeners had).
+ */
+function onForeground(read) {
+  let stopped = false;
+  let lastRun = 0;
+  const run = (initial = false) => {
+    if (stopped) return;
+    if (!initial && document.hidden) return;
+    if (Date.now() - lastRun < 1000) return;
+    lastRun = Date.now();
+    read(() => !stopped);
+  };
+  run(true);
+  document.addEventListener('visibilitychange', run);
+  window.addEventListener('focus', run);
+  return () => {
+    stopped = true;
+    document.removeEventListener('visibilitychange', run);
+    window.removeEventListener('focus', run);
+  };
+}
+
 export function watchWallet(uid, cb) {
-  return onSnapshot(doc(db, 'wallets', uid), (snap) => {
-    cb(snap.exists() ? snap.data() : {
-      availablePaisa: 0, holdPaisa: 0, pendingWithdrawalPaisa: 0,
-      earnedPaisa: 0, withdrawnPaisa: 0
-    });
-  }, () => cb(null));
+  return onForeground(async (isActive) => {
+    try {
+      const snap = await getDoc(doc(db, 'wallets', uid));
+      if (!isActive()) return;
+      cb(snap.exists() ? snap.data() : { ...EMPTY_WALLET });
+    } catch (_) {
+      if (isActive()) cb(null);
+    }
+  });
 }
 
 export function watchPlatformConfig(cb) {
-  return onSnapshot(doc(db, 'config', 'platform'), (snap) => {
-    const d = snap.data() || {};
-    cb({
-      holdDays: d.holdDays || 3,
-      minWithdrawalPaisa: d.minWithdrawalPaisa || 50000,
-      supportEmail: d.supportEmail || 'support@afnokamai.web.app'
-    });
-  }, () => cb({ holdDays: 3, minWithdrawalPaisa: 50000, supportEmail: 'support@afnokamai.web.app' }));
+  // Pure configuration: read exactly once. It changes rarely enough that
+  // the next page load picking up a new value is indistinguishable from a
+  // stream — and it means no page keeps even a single doc listener open.
+  const DEFAULTS = { holdDays: 3, minWithdrawalPaisa: 50000, supportEmail: 'support@afnokamai.web.app' };
+  getDoc(doc(db, 'config', 'platform'))
+    .then((snap) => {
+      const d = snap.data() || {};
+      cb({
+        holdDays: d.holdDays || 3,
+        minWithdrawalPaisa: d.minWithdrawalPaisa || 50000,
+        supportEmail: d.supportEmail || 'support@afnokamai.web.app'
+      });
+    })
+    .catch(() => cb({ ...DEFAULTS }));
+  return () => {};
 }
 
 /** All of the user's currently-held (locked) reward transactions, soonest release first. */

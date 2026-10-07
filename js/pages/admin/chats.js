@@ -1,6 +1,7 @@
 // ─── Admin: chat center (list + thread + task request actions) ───────
 import { db } from '../../firebase.js';
-import { collection, query, where, limit, getDocs, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, limit, getDocs } from 'firebase/firestore';
+import { subscribeWhileVisible } from '../../listen.js';
 import { mountAdminShell } from '../../admin-shell.js?v=4';
 import { esc, fmtNPR } from '../../utils.js';
 import { icon } from '../../icons.js';
@@ -131,12 +132,14 @@ async function maybeShowRequestBanner(uid) {
 
 // One snapshot listener per conversation instead of a 5-second poll: the poll
 // cost up to 5 reads every 5 s (≈3,600 reads/hour) while a request was pending.
-// A listener costs 1 read on attach and then only fires on real changes.
+// A listener costs 1 read on attach and then only fires on real changes —
+// and subscribeWhileVisible() drops even that while the admin is looking at
+// another tab (the banner reappears from the snapshot on return).
 let bannerUnsub = null;
 function watchRequests(uid) {
   if (bannerUnsub) { bannerUnsub(); bannerUnsub = null; }
   if (!uid) return;
-  bannerUnsub = onSnapshot(
+  bannerUnsub = subscribeWhileVisible(
     query(collection(db, 'taskAssignments'),
       where('userId', '==', uid), where('status', '==', 'requested'), limit(5)),
     () => maybeShowRequestBanner(uid)

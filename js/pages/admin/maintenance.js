@@ -1,6 +1,6 @@
 // ─── Admin: maintenance mode control ─────────────────────────────────
 import { db } from '../../firebase.js';
-import { doc, getDoc, serverTimestamp, onSnapshot, setDoc as fsSetDoc } from 'firebase/firestore';
+import { doc, getDoc, serverTimestamp, setDoc as fsSetDoc } from 'firebase/firestore';
 
 // Bounded writes: Firestore retries RESOURCE_EXHAUSTED forever instead of
 // rejecting, so an unbounded write can hold a promise — and the busy button
@@ -91,7 +91,16 @@ function loadIntoForm(m) {
   else endEl.hidden = true;
 }
 
-onSnapshot(doc(db, 'config', 'maintenance'), (snap) => loadIntoForm(snap.data()), () => {});
+// One read when the admin opens the page (and again after each save), not a
+// permanent stream: the form is a snapshot of the current setting, and the
+// admin is the only writer — a second session overwriting an edit in
+// progress would be worse than a stale badge.
+function loadFromServer() {
+  return getDoc(doc(db, 'config', 'maintenance'))
+    .then((snap) => loadIntoForm(snap.data()))
+    .catch(() => {});
+}
+loadFromServer();
 
 content.querySelector('#maint-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -118,6 +127,7 @@ content.querySelector('#maint-form').addEventListener('submit', async (e) => {
       updatedAt: serverTimestamp()
     }, { merge: true });
     toast(enabled ? 'Maintenance mode enabled.' : 'Maintenance mode disabled.', { type: 'success' });
+    await loadFromServer(); // repaint status badge + preview from what actually saved
   } catch (err) {
     toast(err.message, { type: 'error' });
   }

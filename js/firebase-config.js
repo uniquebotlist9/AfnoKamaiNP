@@ -34,7 +34,7 @@ export const FUNCTIONS_REGION = 'asia-south1';
 // written into this repository, a bundle, or a page. A browser holding it
 // could forge pushes to every user.
 export const VAPID_PUBLIC_KEY =
-  'BAlZc5BOauiuRe1C5-KGq7162RG7W1qtSxxiov7IHXk6CO1dLUY2EoKHpWWEP24OdBS8M6QU4UToWajz7z6qA-U';
+  'BCNMDTYRbkTYvC_1HbUVuZLHEpmeIVdY3NZNXPgmjrM0mpoV4Hixn5TwGUU3aZS8bJnD2Vfyf7PNjdJm-QcHmYA';
 
 // How many devices one account may register at once. Enforced here as a
 // soft limit and again by the sender's per-user query cap — a runaway

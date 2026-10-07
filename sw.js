@@ -97,7 +97,7 @@ const ICON = '/assets/icon-512.png';
    module), so it cannot import from js/. If you rotate the keypair,
    change BOTH places. */
 const VAPID_PUBLIC_KEY =
-  'BAlZc5BOauiuRe1C5-KGq7162RG7W1qtSxxiov7IHXk6CO1dLUY2EoKHpWWEP24OdBS8M6QU4UToWajz7z6qA-U';
+  'BCNMDTYRbkTYvC_1HbUVuZLHEpmeIVdY3NZNXPgmjrM0mpoV4Hixn5TwGUU3aZS8bJnD2Vfyf7PNjdJm-QcHmYA';
 
 function base64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4);

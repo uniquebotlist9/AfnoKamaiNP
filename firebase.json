@@ -1,0 +1,127 @@
+{
+  "hosting": {
+    "public": ".",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      "**/.*",
+      "**/node_modules/**",
+      "functions/**",
+      "scripts/**",
+      "optional-cloud-functions/**",
+      "README.md",
+      "scan.cjs",
+      "zz-enc-probe.html",
+      "database.rules.json",
+      "firestore.rules",
+      "firestore.indexes.json"
+    ],
+    "cleanUrls": true,
+    "trailingSlash": false,
+    "rewrites": [
+      {
+        "source": "/ref",
+        "destination": "/ref.html"
+      },
+      {
+        "source": "/ref/**",
+        "destination": "/ref.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          },
+          {
+            "key": "X-Content-Type-Options",
+            "value": "nosniff"
+          },
+          {
+            "key": "Referrer-Policy",
+            "value": "strict-origin-when-cross-origin"
+          },
+          {
+            "key": "Permissions-Policy",
+            "value": "geolocation=(), microphone=(), camera=()"
+          },
+          {
+            "key": "X-Frame-Options",
+            "value": "SAMEORIGIN"
+          },
+          {
+            "key": "Strict-Transport-Security",
+            "value": "max-age=31536000; includeSubDomains"
+          },
+          {
+            "key": "Cross-Origin-Opener-Policy",
+            "value": "same-origin"
+          },
+          {
+            "key": "Cross-Origin-Resource-Policy",
+            "value": "same-origin"
+          },
+          {
+            "key": "Content-Security-Policy",
+            "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://www.gstatic.com https://cdn.jsdelivr.net 'sha256-Ptdk7Yjy6TMiEjFWiAk0VA/JwyEe7Qrdw9QAgavtD+g=' 'sha256-fzLM2x8dpGnwSf1MGKyH9DemoN0rFC1omNRDIcIRSzU=' 'sha256-tgUs40KIzf5vZtrG+P0ySvg0RponnNo0Ni6MjnRUvv8=' 'sha256-vKufpIIOELBUnyRRaMvnyc2XF+fgiCovpv8EgMrzkpQ='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://sgp.cloud.appwrite.io https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com; manifest-src 'self'; media-src 'self' data: blob:; upgrade-insecure-requests"
+          }
+        ]
+      },
+      {
+        "source": "/@(robots.txt|sitemap.xml|manifest.json|favicon.ico)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=3600"
+          }
+        ]
+      },
+      {
+        "source": "**/*.@(js|css|svg|png|jpg|jpeg|webp|woff2)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "public, max-age=3600"
+          }
+        ]
+      },
+      {
+        "source": "/sw.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          },
+          {
+            "key": "Service-Worker-Allowed",
+            "value": "/"
+          }
+        ]
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "emulators": {
+    "auth": {
+      "port": 9099
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "functions": {
+      "port": 5001
+    },
+    "hosting": {
+      "port": 5000
+    },
+    "ui": {
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,59 @@
+# ── Dependencies ─────────────────────────────────────────────────────
+# The app has no build step, but scripts/ and optional-cloud-functions/
+# pull packages locally, and functions/bridge will if it is ever wired up.
+node_modules/
+*.tgz
+
+# ── Environment files ────────────────────────────────────────────────
+# Ignore every variant except the documented template, so a real .env
+# can never slip through just because someone named it .env.production.
+.env
+.env.*
+!.env.example
+
+# ── Firebase local state ─────────────────────────────────────────────
+# Cache, debug logs and the project alias are all machine-local. The
+# deployable config (firebase.json, firestore.rules, *.indexes.json)
+# IS tracked — those are the files that make a deploy reproducible.
+.firebase/
+.firebaserc
+firebase-debug.log
+ui-debug.log
+firestore-debug.log
+*.log
+
+# ── Credentials that must never reach this repository ────────────────
+# A stray .json here is far more likely to be a downloaded service-account
+# key than source. The VAPID private key and the Firestore Admin key both
+# live in GitHub Actions secrets instead.
+serviceAccount*.json
+*service-account*.json
+*-serviceaccount*.json
+firebase-adminsdk*.json
+firebase-adminsdk*.pem
+credentials*.json
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+vapid*.txt
+vapid*.key
+SECRETS*.txt
+*DO-NOT-COMMIT*
+
+# ── Editors and IDEs ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS junk ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.bak

@@ -1,0 +1,738 @@
+rules_version = '2';
+
+// ═══════════════════════════════════════════════════════════════════
+// AfnoKamai security rules — FREE PLAN ARCHITECTURE (no Cloud Functions)
+//
+// Trust model:
+//  • Users may write ONLY: their onboarding data (strictly validated),
+//    task requests/submissions (state machine below), withdrawal REQUESTS
+//    (non-financial — admins apply money on review), their PIN hash
+//    (write-only, never readable by themselves), heartbeats, chat.
+//  • Financial documents (wallets, transactions, penalties) are written
+//    ONLY by admins (custom claim `admin == true`) using atomic
+//    client-side transactions.
+//  • Hold release: maturity is driven by server timestamps; the admin
+//    client runs an idempotent sweep. Users can never release holds.
+//  • Dedupe: deterministic document IDs make duplicate requests
+//    impossible at the database level (see taskAssignments create).
+// ═══════════════════════════════════════════════════════════════════
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return signedIn() && request.auth.token.get('admin', false) == true;
+    }
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    function verified() {
+      return signedIn() && request.auth.token.email_verified == true;
+    }
+    function notBanned() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('status', 'active') == 'active';
+    }
+
+    // ── Referral helpers ──────────────────────────────────────────────
+    // Codes are public shares (the landing page validates them before
+    // auth), but every WRITE is owner-bound and validated field-by-field.
+    function validReferralCode(c) {
+      return c is string && c.matches('^AFK-[A-HJ-NP-Z2-9]{8}$');
+    }
+    // Vanity handles: lowercase URL slug, never impersonating the platform,
+    // support, auth routes or brand. Mirrored in js/referral.js.
+    function validReferralHandle(h) {
+      return h is string
+        && h.size() >= 3 && h.size() <= 30
+        && h.matches('^[a-z0-9][a-z0-9._-]*$')
+        && !(h in [
+          'admin', 'administrator', 'admins', 'support', 'help', 'helpcenter', 'contact',
+          'login', 'signin', 'signup', 'register', 'dashboard', 'settings', 'profile',
+          'referral', 'referrals', 'invite', 'invites', 'reward', 'rewards', 'promo', 'promos',
+          'api', 'system', 'official', 'afnokamai', 'www', 'mail', 'email', 'root',
+          'staff', 'moderator', 'mod', 'superuser', 'billing', 'payments', 'pay', 'wallet',
+          'withdraw', 'earn', 'tasks', 'task', 'chat', 'security', 'auth', 'account', 'accounts',
+          'me', 'about', 'blog', 'news', 'legal', 'privacy', 'terms', 'status',
+          'dev', 'debug', 'test', 'staging', 'index', 'home', 'static', 'assets', 'public',
+          'files', 'docs', 'guide', 'faq', 'press', 'careers', 'jobs', 'partners', 'affiliates'
+        ]);
+    }
+
+    // Attachments are stored INLINE as data URLs inside the message document.
+    // The scheme must be validated: a message is rendered verbatim in the
+    // ADMIN's thread, so `javascript:` or an attacker-controlled `https://`
+    // URL would become a live link inside an authenticated admin session.
+    function validMedia(data) {
+      return (data.type == 'text' && data.get('mediaUrl', '') == '')
+        || (data.type in ['image', 'file']
+            && data.get('mediaUrl', '') is string
+            && data.get('mediaUrl', '').size() <= 750000
+            && data.get('mediaUrl', '').matches('^data:(image/[a-zA-Z0-9.+-]+|application/[a-zA-Z0-9.+-]+);base64,[A-Za-z0-9+/=]+$')
+            && data.get('mediaName', '') is string
+            && data.get('mediaName', '').size() <= 255);
+    }
+
+    // ── Users ──────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow get, list: if isSelf(uid) || isAdmin();
+
+      // Initial signup document — every field validated server-side.
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly([
+             'uid', 'email', 'emailVerified', 'fullName', 'phone', 'role', 'status',
+             'profileComplete', 'pinSetAt', 'pinSalt', 'createdAt', 'lastActiveAt', 'stats',
+             'referralCode', 'referralHandle', 'referralCodeSetAt',
+             'referredBy', 'referredByCode', 'referralJoinedAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.emailVerified == false
+        && request.resource.data.role == 'user'
+        && request.resource.data.status == 'active'
+        && request.resource.data.profileComplete == false
+        && request.resource.data.fullName == ''
+        && request.resource.data.phone == ''
+        && request.resource.data.get('referredBy', '') == ''
+        && request.resource.data.get('referredByCode', '') == ''
+        // Referral identity: either no code yet, or a well-formed code whose
+        // mapping document is being created FOR THIS uid in the same batch
+        // (getAfter) — a client can never claim someone else's code.
+        && (
+             request.resource.data.get('referralCode', '') == ''
+             || (validReferralCode(request.resource.data.referralCode)
+                 && getAfter(/databases/$(database)/documents/referralCodes/$(request.resource.data.referralCode)).data.userId == uid))
+        && request.resource.data.get('referralHandle', '') == ''
+        && request.resource.data.stats.get('assigned', 0) == 0
+        && request.resource.data.stats.get('approved', 0) == 0
+        && request.resource.data.stats.get('rejected', 0) == 0
+        && request.resource.data.stats.get('earnedPaisa', 0) == 0
+        && request.resource.data.stats.get('withdrawnPaisa', 0) == 0
+        && request.resource.data.stats.get('penaltiesPaisa', 0) == 0;
+
+      // After creation: admins may update anything; the owner may only
+      //  1) complete onboarding (name/phone, exactly once),
+      //  2) refresh lastActiveAt,
+      //  3) set PIN salt/setAt metadata,
+      //  4) claim their referral identity (code + optional handle) once,
+      //  5) change their vanity handle (ownership never moves with it),
+      //  6) have referral attribution applied once, at the end of signup.
+      allow update: if isAdmin()
+        || (isSelf(uid) && notBanned() && (
+              (!resource.data.get('profileComplete', false)
+                && changedKeys().hasOnly(['fullName', 'phone', 'profileComplete'])
+                && request.resource.data.profileComplete == true
+                && request.resource.data.fullName is string
+                && request.resource.data.fullName.matches('[A-Za-z][A-Za-z .-]{1,59}')
+                && request.resource.data.phone is string
+                && request.resource.data.phone.matches('(9[678][0-9]{8}|0?1[0-9]{7}|0?[2-7][0-9]{7})'))
+              || changedKeys().hasOnly(['lastActiveAt'])
+              // Email verification flag: the OWNER may flip this exactly once,
+              // false -> true, and only when the ID TOKEN already carries
+              // email_verified=true. The backend claim is authoritative, so a
+              // client can never self-declare verification it does not have.
+              || (changedKeys().hasOnly(['emailVerified'])
+                    && resource.data.emailVerified == false
+                    && request.resource.data.emailVerified == true
+                    && verified())
+              || changedKeys().hasOnly(['pinSalt', 'pinSetAt'])
+              || changedKeys().hasOnly(['pinSalt'])
+              || changedKeys().hasOnly(['pinSetAt'])
+              // ── Referral identity claim (one-time) ────────────────────
+              // getAfter() proves the code/handle mapping documents were
+              // created FOR THIS uid in the same transaction — a client can
+              // never write a code that belongs to someone else, and the
+              // claim cannot piggyback any other field change.
+              || (changedKeys().hasOnly(['referralCode', 'referralHandle', 'referralCodeSetAt'])
+                    && !resource.data.get('referralCode', '')
+                    && request.resource.data.get('referredBy', '') == resource.data.get('referredBy', '')
+                    && validReferralCode(request.resource.data.referralCode)
+                    && request.resource.data.get('referralHandle', '') is string
+                    && (
+                         request.resource.data.get('referralHandle', '') == ''
+                         || (validReferralHandle(request.resource.data.referralHandle)
+                             && getAfter(/databases/$(database)/documents/referralHandles/$(request.resource.data.referralHandle)).data.userId == uid))
+                    && getAfter(/databases/$(database)/documents/referralCodes/$(request.resource.data.referralCode)).data.userId == uid)
+              // ── Vanity handle change (code + ownership stay fixed) ────
+              || (changedKeys().hasOnly(['referralHandle'])
+                    && resource.data.get('referralCode', '') != ''
+                    && request.resource.data.get('referralHandle', '') is string
+                    && (
+                         request.resource.data.get('referralHandle', '') == ''
+                         || (validReferralHandle(request.resource.data.referralHandle)
+                             && getAfter(/databases/$(database)/documents/referralHandles/$(request.resource.data.referralHandle)).data.userId == uid)))
+              // ── Referral attribution (written once, at signup end) ─────
+              // The relationship document is created in the same batch and
+              // must map back to THIS uid as the referred user. The doc id
+              // is referrerId_uid, so ownership can never be re-assigned.
+              || (changedKeys().hasOnly(['referredBy', 'referredByCode', 'referralJoinedAt'])
+                    && resource.data.get('referredBy', '') == ''
+                    && request.resource.data.referredBy is string
+                    && request.resource.data.referredBy != ''
+                    && request.resource.data.referredBy != uid
+                    && validReferralCode(request.resource.data.referredByCode)
+                    && getAfter(/databases/$(database)/documents/referrals/$(request.resource.data.referredBy + '_' + uid)).data.referredUserId == uid)));
+      allow delete: if false;
+
+      // ── PIN hash: write-only for the owner, readable by admins only ──
+      // The user can never read their own hash, so a stolen session cannot
+      // brute-force the PIN offline. Admins verify withdrawal proofs.
+      match /private/{docId} {
+        allow get, list: if isAdmin();
+        allow create, update: if isSelf(uid)
+          && request.resource.data.keys().hasOnly(['pinHash', 'pinAlgo', 'pinIterations'])
+          && request.resource.data.pinHash is string
+          && request.resource.data.pinHash.size() >= 40
+          && request.resource.data.pinHash.size() <= 128
+          && request.resource.data.pinAlgo == 'PBKDF2-SHA256'
+          && request.resource.data.pinIterations is int
+          && request.resource.data.pinIterations >= 100000
+          && request.resource.data.pinIterations <= 200000;
+        allow delete: if false;
+      }
+
+      // ── Internal admin notes: NEVER visible to the user ─────────────
+      match /notes/{noteId} {
+        allow read: if isAdmin();
+        allow create: if isAdmin()
+          && request.resource.data.keys().hasOnly(['text', 'createdAt', 'createdBy', 'createdByName'])
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ── Wallets: zero-valued create by owner, admin-only thereafter ──
+    match /wallets/{uid} {
+      allow get: if isSelf(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(['availablePaisa', 'holdPaisa', 'earnedPaisa', 'withdrawnPaisa', 'updatedAt'])
+        && request.resource.data.availablePaisa == 0
+        && request.resource.data.holdPaisa == 0
+        && request.resource.data.earnedPaisa == 0
+        && request.resource.data.withdrawnPaisa == 0;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ── Task templates ─────────────────────────────────────────────
+    match /tasks/{id} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── Task assignments (lifecycle enforced here) ─────────────────
+    match /taskAssignments/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+
+      // ── Admin: archive a final decision to the history doc ─────────
+      // Final decisions (approve/reject/cancel) copy the active assignment
+      // into a new `isHistory` document. Without this branch every approval
+      // would be denied — the archived copy belongs to the WORKER (userId !=
+      // admin uid), carries a final status, and isHistory == true, so it can
+      // never satisfy the user-facing request rule below.
+      allow create: if isAdmin()
+        && request.resource.data.isHistory == true
+        && request.resource.data.userId is string
+        && request.resource.data.userId != ''
+        && request.resource.data.status in ['approved', 'rejected', 'cancelled'];
+
+      // ── User: request a task ───────────────────────────────────────
+      // Snapshot fields must match the real task, the task must be
+      // published, and the document ID is bound to (owner, task) so a
+      // duplicate request for the same task is impossible at the database
+      // level — a second create would collide with the first document.
+      allow create: if signedIn() && verified() && notBanned()
+        && request.resource.data.userId == request.auth.uid
+        && id == request.auth.uid + '_' + request.resource.data.taskId
+        && request.resource.data.status == 'requested'
+        && request.resource.data.keys().hasOnly([
+             'taskId', 'title', 'description', 'instructions', 'category', 'difficulty',
+             'estimatedMinutes', 'rewardPaisa', 'slotsTotal', 'deadline', 'evidenceRequired',
+             'priority', 'userId', 'userName', 'userEmail', 'status', 'note', 'evidenceNote',
+             'requestedAt', 'assignedAt', 'submittedAt', 'reviewedAt', 'reviewedBy',
+             'reviewedByName', 'holdUntil', 'rejectionReason', 'clarificationReason', 'isHistory'])
+        && request.resource.data.taskId is string
+        && request.resource.data.isHistory == false
+        && request.resource.data.note == ''
+        && request.resource.data.evidenceNote == ''
+        && request.resource.data.reviewedAt == null
+        && exists(/databases/$(database)/documents/tasks/$(request.resource.data.taskId))
+        && get(/databases/$(database)/documents/tasks/$(request.resource.data.taskId)).data.status == 'published'
+        && get(/databases/$(database)/documents/tasks/$(request.resource.data.taskId)).data.rewardPaisa == request.resource.data.rewardPaisa
+        && get(/databases/$(database)/documents/tasks/$(request.resource.data.taskId)).data.title == request.resource.data.title
+        && request.resource.data.rewardPaisa is int
+        && request.resource.data.rewardPaisa > 0
+        && request.resource.data.rewardPaisa <= 10000000;
+
+      // Submission: owner may only move assigned/clarification → submitted.
+      allow update: if isAdmin()
+        || (signedIn() && resource.data.userId == request.auth.uid && notBanned()
+            && resource.data.status in ['assigned', 'clarification']
+            && changedKeys().hasOnly(['status', 'submittedAt', 'note', 'evidenceNote'])
+            && request.resource.data.status == 'submitted'
+            && request.resource.data.note is string
+            && request.resource.data.note.size() <= 1000
+            && request.resource.data.evidenceNote is string
+            && request.resource.data.evidenceNote.size() <= 1000);
+      // History move deletes the active doc — admin only.
+      allow delete: if isAdmin();
+    }
+
+    // ── One concurrent withdrawal per user (deterministic id = uid) ──
+    match /activeWithdrawals/{uid} {
+      allow get: if isAdmin() || isSelf(uid);
+      allow list: if isAdmin();
+      allow create: if isSelf(uid) && verified() && notBanned()
+        && request.resource.data.keys().hasOnly(['withdrawalId', 'amountPaisa', 'createdAt'])
+        && request.resource.data.withdrawalId is string
+        && request.resource.data.amountPaisa is int
+        && request.resource.data.amountPaisa > 0;
+      allow update: if false;
+      allow delete: if isAdmin();
+    }
+
+    // ── Transactions: immutable ledger, admin-written only ─────────
+    match /transactions/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Withdrawals: user creates the REQUEST; admins apply money ───
+    match /withdrawals/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn() && verified() && notBanned()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.keys().hasOnly([
+             'userId', 'userName', 'userEmail', 'amountPaisa', 'esewaName', 'esewaNumber',
+             'status', 'pinProof', 'pinProofAlgo', 'pinIterations', 'pinSaltUsed',
+             'requestedAt', 'reviewedAt', 'reviewedBy', 'reviewedByName', 'reason', 'txId'])
+        && request.resource.data.amountPaisa is int
+        && request.resource.data.amountPaisa >= 10000
+        && request.resource.data.amountPaisa <= 50000000
+        && request.resource.data.esewaName is string
+        && request.resource.data.esewaName.size() >= 3
+        && request.resource.data.esewaName.size() <= 60
+        && request.resource.data.esewaNumber is string
+        && request.resource.data.esewaNumber.matches('9[678][0-9]{8}')
+        && request.resource.data.pinProof is string
+        && request.resource.data.pinProof.size() >= 40
+        && request.resource.data.pinProof.size() <= 128
+        && request.resource.data.pinProofAlgo == 'PBKDF2-SHA256'
+        && request.resource.data.pinIterations is int
+        && request.resource.data.txId == ''
+        && request.resource.data.reason == '';
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ── Penalties (permanent record, admin-written) ────────────────
+    match /penalties/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ═══════════════════ Referral system ════════════════════════════
+    // Public lookup docs (codes are meant to be shared), validated,
+    // immutable mappings. Writes are owner-bound; rules above prove the
+    // mapping belongs to the writing uid via getAfter().
+
+    match /referralCodes/{code} {
+      // Public validation for the anonymous /ref landing page + signup form.
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['code', 'userId', 'createdAt'])
+        && request.resource.data.code == code
+        && validReferralCode(code)
+        && request.resource.data.userId == request.auth.uid
+        && !exists(/databases/$(database)/documents/referralCodes/$(code));
+      allow update, delete: if false; // codes are stable once issued
+    }
+
+    match /referralHandles/{handle} {
+      allow get: if true; // vanity links are public
+      allow list: if isAdmin();
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['handle', 'userId', 'code', 'createdAt'])
+        && request.resource.data.handle == handle
+        && validReferralHandle(handle)
+        && request.resource.data.userId == request.auth.uid
+        && validReferralCode(request.resource.data.code)
+        && getAfter(/databases/$(database)/documents/referralCodes/$(request.resource.data.code)).data.userId == request.auth.uid
+        && !exists(/databases/$(database)/documents/referralHandles/$(handle));
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid; // release on handle change
+    }
+
+    // Referral relationship — id == referrerId_referredUserId (one-time).
+    match /referrals/{id} {
+      // The inviter sees their own referrals; the referred user may read
+      // their own record; admins investigate. Nobody else.
+      allow get, list: if isAdmin()
+        || (signedIn() && (resource.data.referrerId == request.auth.uid
+                           || resource.data.referredUserId == request.auth.uid));
+
+      // Created ONCE by the referred user at the end of registration.
+      // Rules re-verify the code → referrer mapping, block self-referrals,
+      // and pin the doc id to this exact pair — no client can fabricate or
+      // re-assign referral ownership.
+      allow create: if signedIn() && verified() && notBanned()
+        && id == request.resource.data.referrerId + '_' + request.auth.uid
+        && request.resource.data.keys().hasOnly([
+             'referrerId', 'referredUserId', 'referredName', 'referralCode', 'status',
+             'approvedTaskCount', 'totalEarnedPaisa', 'milestoneReached',
+             'milestoneRewardTransactionId', 'rewardsSuspended', 'underReview',
+             'deviceSig', 'createdAt', 'lastRewardAt', 'lastCountedAt'])
+        && request.resource.data.referrerId is string
+        && request.resource.data.referrerId != ''
+        && request.resource.data.referrerId != request.auth.uid // self-referral
+        && request.resource.data.referredUserId == request.auth.uid
+        && request.resource.data.referredName is string
+        && request.resource.data.referredName.size() <= 60
+        && validReferralCode(request.resource.data.referralCode)
+        && get(/databases/$(database)/documents/referralCodes/$(request.resource.data.referralCode)).data.userId == request.resource.data.referrerId
+        && request.resource.data.status == 'joined'
+        && request.resource.data.approvedTaskCount == 0
+        && request.resource.data.totalEarnedPaisa == 0
+        && request.resource.data.milestoneReached == false
+        && request.resource.data.milestoneRewardTransactionId == null
+        && request.resource.data.rewardsSuspended == false
+        && request.resource.data.underReview == false
+        && request.resource.data.deviceSig is string
+        && request.resource.data.deviceSig.size() <= 128
+        && request.resource.data.createdAt == request.time;
+
+      // Counters, status, suspension and review state are written ONLY by
+      // the admin-authoritative reward processor (custom claim `admin`).
+      // Clients can never touch approvedTaskCount or totalEarnedPaisa.
+      allow update, delete: if isAdmin();
+
+      // Activity timeline: the referred user writes the 'joined' event once
+      // (deterministic id); the admin reward processor writes the rest.
+      match /events/{eventId} {
+        allow read: if isAdmin()
+          || (signedIn() && get(/databases/$(database)/documents/referrals/$(id)).data.referrerId == request.auth.uid);
+        allow create: if signedIn() && verified()
+          && eventId == 'joined'
+          && request.resource.data.keys().hasOnly(['referrerId', 'referredUserId', 'type', 'title', 'amountPaisa', 'taskId', 'createdAt'])
+          && getAfter(/databases/$(database)/documents/referrals/$(id)).data.referredUserId == request.auth.uid
+          && request.resource.data.referrerId is string
+          && request.resource.data.type == 'joined'
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 160
+          && request.resource.data.amountPaisa == 0
+          && request.resource.data.taskId == ''
+          && request.resource.data.createdAt == request.time;
+        allow create, update, delete: if isAdmin();
+      }
+    }
+
+    // Referral reward records — one per paid reward, deterministic IDs
+    // (REFERRAL_MILESTONE_{referrer}_{referred} / REFERRAL_TASK_..._{taskId})
+    // so retries and double-approvals can never create a duplicate.
+    match /referralRewards/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.referrerId == request.auth.uid);
+      allow create, update, delete: if isAdmin(); // financial — admin-only
+    }
+
+    // Referral risk flags — admin-only, same trust level as `riskFlags`.
+    // Never visible to ordinary users.
+    match /referralRiskFlags/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Notifications: created by admins, read-state by owner ──────
+    // One narrow exception: the 'referral_joined' notification, written by
+    // the referred user's client where the relationship is created (the
+    // admin client is not in that flow on the free plan). The deterministic
+    // doc id makes it exactly-once per referral pair, and the rule proves a
+    // real referral relationship exists with the recipient as the inviter —
+    // so users still cannot spam arbitrary accounts with notifications.
+    match /notifications/{id} {
+      allow get, list: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isAdmin()
+        || (signedIn()
+            && request.resource.data.type == 'referral_joined'
+            && id == 'referral_joined_' + request.resource.data.userId + '_' + request.auth.uid
+            && request.resource.data.keys().hasOnly([
+                 'userId', 'audience', 'type', 'category', 'eventId', 'pushState',
+                 'title', 'body', 'link', 'tone', 'icon', 'searchText',
+                 'read', 'createdAt'])
+            && request.resource.data.audience == 'user'
+            && request.resource.data.userId is string
+            && request.resource.data.userId != ''
+            && request.resource.data.userId != request.auth.uid
+            && request.resource.data.title is string
+            && request.resource.data.title.size() <= 140
+            && request.resource.data.body is string
+            && request.resource.data.body.size() <= 600
+            // Search index mirrors title+body and is bounded so it cannot be
+            // used to bloat the document.
+            && (!('searchText' in request.resource.data)
+                || (request.resource.data.searchText is string
+                    && request.resource.data.searchText.size() <= 400))
+            && request.resource.data.link == 'referral.html'
+            && request.resource.data.read == false
+            // Push fields are pinned, not caller-chosen: a user may queue a
+            // push only for this one exactly-once referral event, never for an
+            // arbitrary notification or with a forged category/priority.
+            && request.resource.data.category == 'referral'
+            && request.resource.data.eventId == id
+            && request.resource.data.pushState == 'queued'
+            && getAfter(/databases/$(database)/documents/referrals/$(request.resource.data.userId + '_' + request.auth.uid)).data.referredUserId == request.auth.uid)
+        // (B) Self-only security event.
+        //
+        // There is no backend on this plan — no Cloud Functions — so the
+        // page that actually performs the password or PIN change is the
+        // only thing that can record it. Three constraints keep this from
+        // becoming a notification generator:
+        //
+        //   * `userId` is pinned to the caller's own uid, so it can never
+        //     address another account's feed;
+        //   * `type` is a fixed allow-list with `category` pinned to
+        //     'security', so it cannot forge reward, payment or
+        //     announcement alerts;
+        //   * the doc id must embed both the type and the caller's uid, so
+        //     a replay is exactly-once and the id cannot be re-pointed at
+        //     some other notification.
+        //
+        // What this does NOT prevent is a user writing nonsense into their
+        // own feed. That is self-harm; the alternative — no record of a
+        // password change at all — is the failure the product cannot have.
+        || (signedIn()
+            && request.resource.data.userId == request.auth.uid
+            && request.resource.data.audience == 'user'
+            && request.resource.data.type in [
+                 'password_changed', 'pin_changed', 'new_device', 'login_alert']
+            && request.resource.data.category == 'security'
+            && request.resource.data.eventId == id
+            // Rules have no startsWith(), so the prefix is anchored inside a
+            // regex instead. `type` has already been narrowed to four literal
+            // allow-list values two lines above and none of them contains a
+            // regex metacharacter, so interpolating it is safe. The uid is
+            // deliberately NOT interpolated — a uid could in principle carry
+            // metacharacters and would let an attacker break the pattern.
+            // The constraint that actually matters is `userId` pinned to the
+            // caller, checked first in this branch: without it the id would
+            // be a purely cosmetic uniqueness key.
+            && id.matches('^sec_' + request.resource.data.type + '_[A-Za-z0-9_-]{1,140}$')
+            && request.resource.data.keys().hasOnly([
+                 'userId', 'audience', 'type', 'category', 'eventId', 'pushState',
+                 'title', 'body', 'link', 'tone', 'icon', 'searchText',
+                 'read', 'createdAt'])
+            && request.resource.data.title is string
+            && request.resource.data.title.size() <= 140
+            && request.resource.data.body is string
+            && request.resource.data.body.size() <= 600
+            && (!('link' in request.resource.data)
+                || (request.resource.data.link is string
+                    && request.resource.data.link.size() <= 300))
+            && (!('searchText' in request.resource.data)
+                || (request.resource.data.searchText is string
+                    && request.resource.data.searchText.size() <= 400))
+            // Icon and tone are interpolated into the DOM by the shell, so
+            // their length is bounded even though they are escaped.
+            && (!('icon' in request.resource.data)
+                || (request.resource.data.icon is string && request.resource.data.icon.size() <= 30))
+            && request.resource.data.read == false
+            && request.resource.data.pushState == 'queued'
+            && request.resource.data.createdAt == request.time);
+      allow update: if signedIn() && resource.data.userId == request.auth.uid
+        && changedKeys().hasOnly(['read', 'readAt']);
+      // Users may dismiss their own rows. Scoping to `resource.data.userId`
+      // means no one can delete another account's history, and `id` is never
+      // trusted as proof of ownership.
+      allow delete: if isAdmin()
+        || (signedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    // ── Push subscriptions ─────────────────────────────────────────
+    // One document per (user, browser profile): the id is derived from the
+    // auth uid and the client's deviceId, so a device can never register
+    // itself twice or address another account's endpoint. The VAPID public
+    // key lives in the client; the private key never leaves the sender.
+    match /pushSubscriptions/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow create: if signedIn()
+        && id == request.auth.uid + '_' + request.resource.data.deviceId
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+             'userId', 'deviceId', 'endpoint', 'keys', 'platform', 'browser',
+             'deviceName', 'isActive', 'permissionStatus', 'failCount',
+             'lastUsedAt', 'createdAt', 'updatedAt'])
+        && request.resource.data.endpoint is string
+        && request.resource.data.endpoint.size() > 0
+        && request.resource.data.endpoint.size() <= 2048
+        && request.resource.data.endpoint.matches('^https://')
+        && request.resource.data.keys is map
+        && request.resource.data.keys.p256dh is string
+        && request.resource.data.keys.p256dh.size() > 0
+        && request.resource.data.keys.auth is string
+        && request.resource.data.keys.auth.size() > 0
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() >= 8
+        && request.resource.data.deviceId.size() <= 64
+        && request.resource.data.deviceName is string
+        && request.resource.data.deviceName.size() <= 80
+        && request.resource.data.isActive == true
+        && request.resource.data.failCount == 0
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && resource.data.userId == request.auth.uid
+        // The client may only flip its own switch or refresh bookkeeping.
+        // failCount/deactivation are the sender's to write (Admin SDK, which
+        // bypasses rules), so they are deliberately not client-writable.
+        && changedKeys().hasOnly([
+             'isActive', 'deviceName', 'permissionStatus', 'lastUsedAt', 'updatedAt'])
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.endpoint == resource.data.endpoint;
+      allow delete: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Notification preferences (per user) ────────────────────────
+    // Security is intentionally NOT a toggle: there is no field in this
+    // document that can turn off security alerts, so a compromised
+    // preference document cannot silence login or password warnings.
+    match /notificationPrefs/{uid} {
+      allow read: if signedIn() && uid == request.auth.uid;
+      allow create, update: if signedIn() && uid == request.auth.uid
+        // Push only. Two fields were deliberately left out rather than
+        // shipped as dead switches: `email` (no email sender on the free
+        // plan) and `inApp` (hiding badges while the user is looking at the
+        // app would desync the count from the list it points to).
+        && request.resource.data.keys().hasOnly([
+             'push', 'categories', 'updatedAt'])
+        && request.resource.data.push is bool
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+      allow read, write: if isAdmin();
+    }
+
+    // ── Delivery log (sender-written, user/admin readable) ─────────
+    // Clients cannot write this: delivery truth must come from the sender,
+    // otherwise a page could forge "delivered" for a push never sent.
+    // The Admin SDK ignores rules, so `if false` still lets the sender log.
+    match /notificationLog/{id} {
+      allow read: if isAdmin() || (signedIn() && resource.data.userId == request.auth.uid);
+      allow write: if false;
+    }
+
+    // ── Announcements ──────────────────────────────────────────────
+    match /announcements/{id} {
+      allow read: if signedIn();
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ── Platform configuration ─────────────────────────────────────
+    match /config/{doc} {
+      allow read: if signedIn() || doc == 'maintenance';
+      allow write: if isAdmin();
+    }
+
+    // ── Audit log: admin-written, immutable ────────────────────────
+    match /adminLogs/{id} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ── Risk flags (admin-only) ────────────────────────────────────
+    match /riskFlags/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Aggregate stats (admin-only) ───────────────────────────────
+    match /stats/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // ── Conversations (one per user, id == uid) ────────────────────
+    //
+    // Server-side send pacing (rate limit). A user message may only be
+    // created in the SAME batch as the conversation's `lastMessageAt`
+    // stamp, and that stamp must equal the server time of THIS request
+    // while sitting at least one second after the previous stamp. The
+    // stamp is only ever accepted as `request.time` (see the update rule
+    // below), so it can never be back-dated to skip the wait: a scripted
+    // client is capped at one message per second per conversation instead
+    // of thousands. Conversations created before the stamp existed are
+    // paced from their first stamped message.
+    function pacedSend(cid) {
+      let path = /databases/$(database)/documents/conversations/$(cid);
+      let ok = exists(path);
+      let before = ok ? get(path).data : {};
+      let after = ok ? getAfter(path).data : {};
+      return ok
+        && ('lastMessageAt' in after)
+        && after.lastMessageAt is timestamp
+        && after.lastMessageAt == request.time
+        && (
+             // conversation predates the stamp — only the first message is free
+             !('lastMessageAt' in before)
+             // steady state: strictly more than a second since the last stamp
+             || (before.lastMessageAt is timestamp
+                 && request.time > before.lastMessageAt + duration.value(1, 's')));
+    }
+
+    match /conversations/{cid} {
+      allow get, list: if isAdmin() || isSelf(cid);
+      allow create: if isSelf(cid) && notBanned()
+        && request.resource.data.participants == [request.auth.uid]
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.unreadForAdmin == 0
+        && request.resource.data.unreadForUser == 0;
+      allow update: if (isSelf(cid) && changedKeys().hasOnly([
+              'userTyping', 'userTypingAt', 'unreadForUser', 'userLastReadAt',
+              'lastMessage', 'lastMessageAt', 'lastSenderId', 'lastSenderRole',
+              'lastType', 'unreadForAdmin'])
+            // The pacing stamp may only ever be written as "now", so it can
+            // never be rewound to defeat the one-message-per-second limit on
+            // message creation (pacedSend below). Removing the field fails
+            // this access too, so the write is denied rather than opening a
+            // gap in the pacing check.
+            && (!changedKeys().hasAny(['lastMessageAt'])
+                || request.resource.data.lastMessageAt == request.time))
+        || (isAdmin() && changedKeys().hasOnly([
+              'adminTyping', 'adminTypingAt', 'unreadForAdmin', 'adminLastReadAt',
+              'lastMessage', 'lastMessageAt', 'lastSenderId', 'lastSenderRole',
+              'lastType', 'unreadForUser']));
+      allow delete: if false;
+
+      match /messages/{mid} {
+        allow read: if isAdmin() || isSelf(cid);
+        // Users: text/attachments with size caps, only while in good standing,
+        // and paced: one message per second (pacedSend).
+        // Admins: any message incl. system notices; may delete (moderation).
+        allow create: if (isSelf(cid) && notBanned()
+                        && request.resource.data.senderId == request.auth.uid
+                        && request.resource.data.senderRole == 'user'
+                        && request.resource.data.type in ['text', 'image', 'file']
+                        && request.resource.data.text is string
+                        && request.resource.data.text.size() <= 4000
+                        && validMedia(request.resource.data)
+                        && pacedSend(cid))
+                      || (isAdmin() && request.resource.data.senderRole in ['admin', 'system']);
+        // Read receipts: ONLY the conversation owner or an admin may stamp
+        // readAt. Without the ownership check any signed-in user could write
+        // readAt onto another user's messages (cross-tenant write).
+        allow update: if (isSelf(cid) || isAdmin())
+          && changedKeys().hasOnly(['readAt']);
+        allow delete: if isAdmin();
+      }
+    }
+
+    // ── Everything else denied ─────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

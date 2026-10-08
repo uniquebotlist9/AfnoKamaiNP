@@ -251,6 +251,7 @@ async function buildCharts() {
   // work, so degrade to the empty state instead of throwing.
   if (typeof Chart === 'undefined') {
     content.querySelectorAll('.chart-box').forEach((box) => {
+      box.classList.add('is-empty');
       box.innerHTML = emptyState({
         icon: 'info',
         title: 'Charts unavailable',
@@ -289,7 +290,9 @@ async function buildCharts() {
       }
     });
   } else {
-    earningsCanvas.parentElement.innerHTML = emptyState({
+    const chartBox = earningsCanvas.parentElement;
+    chartBox.classList.add('is-empty');
+    chartBox.innerHTML = emptyState({
       icon: 'trendUp',
       title: 'No earnings yet',
       message: 'Once you complete and get tasks approved, your earnings chart will appear here.',
@@ -321,7 +324,9 @@ async function buildCharts() {
       }
     });
   } else {
-    outcomesCanvas.parentElement.innerHTML = emptyState({
+    const chartBox = outcomesCanvas.parentElement;
+    chartBox.classList.add('is-empty');
+    chartBox.innerHTML = emptyState({
       icon: 'target',
       title: 'No task history yet',
       message: 'Your approved and rejected task counts will show up here after your first review.'
@@ -330,6 +335,7 @@ async function buildCharts() {
 }
 buildCharts().catch(() => {
   content.querySelectorAll('.chart-box').forEach((box) => {
+    box.classList.add('is-empty');
     box.innerHTML = emptyState({
       icon: 'alert',
       title: 'Could not load charts',

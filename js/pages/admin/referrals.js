@@ -840,13 +840,12 @@ async function renderConfig() {
       </div>
 
       <div class="card" style="margin-top:16px">
-        <div class="card-head"><h3>Upgrade path</h3></div>
+        <div class="card-head"><h3>How rewards are validated</h3></div>
         <div class="card-pad">
           <p class="small muted" style="margin:0">
-            On the free Spark plan, rewards are processed by the admin-signed client during task approval
-            and validated entirely by security rules. A reference Cloud Functions implementation
-            (<code>processReferralReward</code>) lives in <code>optional-cloud-functions/</code> for when you
-            move to the Blaze plan — it is not required and is not deployed.
+            Rewards are processed by the admin-signed client during task approval and validated
+            entirely by the platform's write policy. There is no Cloud Functions dependency and
+            no Blaze upgrade planned — everything runs on the free Spark plan.
           </p>
         </div>
       </div>`;

@@ -142,7 +142,9 @@ function watchRequests(uid) {
   bannerUnsub = subscribeWhileVisible(
     query(collection(db, 'taskAssignments'),
       where('userId', '==', uid), where('status', '==', 'requested'), limit(5)),
-    () => maybeShowRequestBanner(uid)
+    () => maybeShowRequestBanner(uid),
+    undefined,
+    { maxPollMs: 10000 } // a pending request banner must not sit 30s behind the user
   );
   maybeShowRequestBanner(uid);
 }

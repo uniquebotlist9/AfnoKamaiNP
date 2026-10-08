@@ -111,6 +111,11 @@ async function systemMsg(uid, text) {
  * guard re-checks the status. Pass a userId to sweep one user.
  */
 export async function sweepHolds(userId = null) {
+  // Defence in depth: the server already refuses this table to non-admins
+  // (transactions/wallets are admin-only there), but every other admin export
+  // gates on the claim first — so this one does too, instead of depending
+  // solely on the backend to stop a forged call.
+  await requireAdmin();
   const parts = [collection(db, 'transactions'), where('status', '==', 'hold'), where('availableAt', '<=', Timestamp.now())];
   if (userId) parts.push(where('userId', '==', userId));
   parts.push(orderBy('availableAt', 'asc'), limit(200));

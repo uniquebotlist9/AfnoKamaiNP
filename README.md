@@ -7,8 +7,8 @@ eligible funds are withdrawn to **eSewa**. Built with HTML/CSS/vanilla JS on the
 
 > **Free plan by design.** No Cloud Functions, no Blaze billing account, no Storage bucket.
 > The security backend is the Firestore rules file plus the admin's custom-claim-authorized
-> client performing atomic transactions. An optional Cloud Functions implementation is kept in
-> `optional-cloud-functions/` for a future Blaze upgrade.
+> client performing atomic transactions. We are **not** pursuing a Blaze upgrade, so no
+> Cloud Functions implementation is kept.
 
 ```
 New Visitor → Login → Signup → Email Verification → Personal Info → Security PIN → Dashboard
@@ -72,7 +72,6 @@ afnokamai/
 ├── firestore.rules             # THE backend: validation, state machines, dedupe, referral attribution
 ├── firestore.indexes.json
 ├── scripts/                    # set-admin.cjs (free-plan admin bootstrap), check-imports.cjs
-└── optional-cloud-functions/   # Blaze upgrade path — NOT deployed
 ```
 
 ## 4. Setup (free plan only)

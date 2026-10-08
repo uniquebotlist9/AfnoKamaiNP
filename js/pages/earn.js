@@ -8,6 +8,7 @@ import { esc, fmtNPR, fmtRelative, countdownUntil, fmtDateTime, fmtDate, DIFFICU
 import { icon } from '../icons.js';
 import { emptyState, skeletonRows, badge, confirmDialog, btnBusy, toast } from '../ui.js';
 import { requestTask, submitTask } from '../api.js';
+import { promptPushOnRequest } from '../push-popup.js';
 
 let { user, profile, content } = await mountShell('earn');
 if (profile.status === 'banned') {
@@ -429,10 +430,14 @@ async function doRequest(taskId, btn) {
     // refresh them now so they are current when the user comes back from chat.
     loadAssignments({ force: true });
     loadTasks({ force: true });
-    const tSnap = await getDoc(doc(db, 'tasks', taskId)).catch(() => null);
-    const title = tSnap?.data()?.title || 'a task';
-    // Take the user straight to the admin chat to follow the request.
-    setTimeout(() => { location.href = 'chat.html'; }, 900);
+    // Let the toast land, then ask for notifications BEFORE leaving — the
+    // popup resolves only once it is gone, so the redirect can never cut off
+    // the browser's permission dialog. Users who already enabled push (or
+    // ticked "Don't show again") skip it and go straight through, and a
+    // failure here must never cost them the chat they just earned.
+    await new Promise((r) => setTimeout(r, 700));
+    try { await promptPushOnRequest(); } catch (_) { /* straight to chat */ }
+    location.href = 'chat.html';
   } catch (err) {
     toast(err.message, { type: 'error', title: 'Could not request task' });
     btnBusy(btn, false);

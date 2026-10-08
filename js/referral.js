@@ -274,20 +274,21 @@ export async function claimReferralIdentity({ handle = '' } = {}) {
     const msg = String(e && e.message || '');
     const errCode = String(e && e.code || '');
     if (msg === TX_GIVE_UP) {
-      // Firestore refused the write a few times in a row. The almost-certain
-      // cause is an exhausted project write quota (HTTP 429 / resource-exhausted),
-      // so say that instead of blaming the user's referral code.
-      throw new Error('We could not create your referral code — Firestore is rejecting writes right now, which usually means this project is over its write quota. Nothing was written. Please try again in a few minutes.');
+      // The write was refused a few times in a row. The almost-certain cause
+      // is an exhausted write quota or shed load (HTTP 429 / resource-exhausted),
+      // so say that instead of blaming the user's referral code — without
+      // naming an internal backend the user has never heard of.
+      throw new Error('We could not create your referral code — the service rejected the write several times. Nothing was written. Please try again in a few minutes.');
     }
     if (msg === 'collision') {
       // Extremely unlikely (32^8 space) — regenerate once and retry.
       return claimReferralIdentity({ handle });
     }
     if (errCode === 'resource-exhausted') {
-      throw new Error('Your referral code could not be created: this project is over its Firestore write quota right now. Please try again a bit later.');
+      throw new Error('Your referral code could not be created: the service is temporarily out of write capacity. Please try again a bit later.');
     }
     if (errCode === 'unavailable' || errCode === 'deadline-exceeded') {
-      throw new Error('Could not reach Firestore. Please check your connection and try again.');
+      throw new Error('Could not reach the server. Please check your connection and try again.');
     }
     if (errCode === 'permission-denied') {
       throw new Error('Your referral code could not be created right now. Please try again in a moment.');
@@ -341,7 +342,7 @@ export async function setReferralHandle(rawHandle) {
     });
   } catch (e) {
     if (e && e.message === 'taken') throw new Error('That referral handle was just taken by someone else. Please try another.');
-    if (e && e.code === 'resource-exhausted') throw new Error('This project is over its Firestore write quota right now. Please try again in a few minutes.');
+    if (e && e.code === 'resource-exhausted') throw new Error('The service is temporarily out of write capacity. Please try again in a few minutes.');
     if (e && e.code === 'permission-denied') throw new Error('Your referral handle could not be changed right now. Please try again in a moment.');
     throw new Error('Could not change your referral handle. Please try again.');
   }

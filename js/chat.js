@@ -87,7 +87,10 @@ export async function mountChat({ root, role, selfUid, selfName }) {
     if (targetUid && allConvs.some((c) => c.id === targetUid) && !activeCleanup) openConversation(targetUid);
   }, () => {
     itemsEl.innerHTML = '<div class="state-block error"><h3>Could not load conversations</h3><p>Check your connection and try again.</p></div>';
-  });
+  // maxPollMs 10s: the conversation list is what tells an admin a new message
+  // just arrived — settling at the 30s default made the list (preview, time,
+  // unread pill, sort order) look stuck after the other side replied.
+  }, { maxPollMs: 10000 });
 
   function renderConvList() {
     const list = allConvs.filter((c) => {
@@ -320,7 +323,24 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   }
 
   // ── messages stream ──
-  let lastAdminMsgId = null;
+  // Admin messages already announced by the in-thread banner this session.
+  // A Set (not a single "last id"): with several messages landing between two
+  // polls, one tracked id lets the same stale message be re-announced while
+  // the newest one is skipped.
+  const bannerShown = new Set();
+  function announceNewAdminMsg() {
+    // Scan newest → oldest and announce only the LATEST unseen admin message:
+    // when a burst arrives, the latest is the one the user needs to see.
+    for (let i = latestMsgs.length - 1; i >= 0; i--) {
+      const m = latestMsgs[i];
+      if (m.senderRole !== 'admin' && m.senderRole !== 'system') continue;
+      if (m.readAt || bannerShown.has(m.id)) return; // everything older is already told or read
+      bannerShown.add(m.id);
+      if (bannerShown.size > 40) bannerShown.delete(bannerShown.values().next().value);
+      showAdminMessageBanner(m);
+      return;
+    }
+  }
   function listen() {
     const q = query(
       collection(db, 'conversations', cid, 'messages'),
@@ -332,15 +352,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       hasOlder = snap.size === pageLimit;
       // Show a prominent banner for new admin messages while the user is
       // already on the chat page — every admin message is high priority.
-      if (role === 'user') {
-        const newAdmin = latestMsgs.find(
-          (m) => (m.senderRole === 'admin' || m.senderRole === 'system') && m.id !== lastAdminMsgId && !m.readAt
-        );
-        if (newAdmin) {
-          lastAdminMsgId = newAdmin.id;
-          showAdminMessageBanner(newAdmin);
-        }
-      }
+      if (role === 'user') announceNewAdminMsg();
       renderAll();
       markRead(latestMsgs);
     }, () => {
@@ -351,7 +363,10 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       // maxPollMs: a fully idle thread settles to 10s instead of the default
       // 30s — sending a message (or receiving one, once it lands) resets the
       // interval to full speed, so only genuine waiting slows down.
-    }, undefined, { maxPollMs: 10000 });
+      // NOTE: opts is the 4TH argument — passing it as a 5th one is silently
+      // ignored and the stream backs off to the 30s default, which is exactly
+      // how new messages ended up taking up to half a minute to appear.
+    }, { maxPollMs: 10000 });
   }
   let msgUnsub = listen();
 
@@ -404,7 +419,11 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
           batch.commit().catch(() => {});
         } catch (_) { /* non-fatal */ }
       },
-      () => {} // permission/offline errors must never break the thread
+      () => {}, // permission/offline errors must never break the thread
+      // maxPollMs 8s: this listener only clears read state, so it should
+      // settle quickly while idle — but not at the 30s default, which left
+      // the bell badge showing "unread" for messages already on screen.
+      { maxPollMs: 8000 }
     );
   }
 
@@ -692,9 +711,13 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       // pacing rule (or an account restriction), so say something the
       // sender can act on instead of raw backend text.
       const denied = err && err.code === 'permission-denied';
+      // End users get actionable wording only — the raw backend string stays
+      // for the admin console, where it is needed to diagnose the failure.
       pendingMsg.failText = (denied && role === 'user')
         ? 'Message blocked — you may be sending too quickly, or your account is restricted. Wait a moment, then tap Retry.'
-        : (err && err.message ? err.message : '');
+        : (role === 'user'
+          ? 'Message could not be sent. Check your connection, then tap Retry.'
+          : (err && err.message ? err.message : ''));
       renderAll();
       toast(pendingMsg.failText || 'Message could not be sent. Use Retry on the message.', { type: 'error' });
     }

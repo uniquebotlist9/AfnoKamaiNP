@@ -75,10 +75,8 @@ unchanged. Nothing in the browser can reach an Appwrite API key.
 2. **The old `afnokamai` project is still live** with its Firestore database.
    It is no longer written to. Take it down or leave it as a read-only
    archive — but it will keep billing if anything still writes to it.
-3. **`optional-cloud-functions/`** still requires `firebase-admin` and is a
-   Firestore trigger. It is not deployed and not referenced by
-   `firebase.json`. Delete it, or migrate it if you ever enable Cloud
-   Functions.
+3. **`optional-cloud-functions/`** has been deleted — we are not pursuing a
+   Blaze upgrade, so no Cloud Functions implementation is kept.
 
 ## Re-verified 2026-10-07
 
@@ -117,4 +115,4 @@ and a foreign row returning 404.
 - [x] Production build deployed to https://afnokamainp.web.app.
 - [ ] Email verification for a real account (see above).
 - [ ] Decide the fate of the old `afnokamai` project.
-- [ ] Delete or migrate `optional-cloud-functions/`.
+- [x] Deleted `optional-cloud-functions/` — no Blaze upgrade planned.

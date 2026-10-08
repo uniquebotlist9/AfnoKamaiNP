@@ -15,7 +15,7 @@ import { initTheme, mountThemeControl } from './theme.js';
 import { sweepHolds } from './admin-actions.js';
 import { icon, logo } from './icons.js';
 import { esc, initials } from './utils.js';
-import { initOfflineBanner, renderMountFailure, withDeadline, WRITE_DEADLINE_MS } from './ui.js';
+import { initOfflineBanner, renderMountFailure, withDeadline, WRITE_DEADLINE_MS, toast } from './ui.js';
 import { initInstallPopup } from './install-popup.js';
 
 const PAGES = {
@@ -163,6 +163,17 @@ export async function mountAdminShell(pageId) {
   });
 
   // ── badges ──
+  // The chats badge query only holds conversations with unreadForAdmin>0, so a
+  // document ENTERING that set means a conversation that was read just got a
+  // new user message — which is the one direction the admin had no
+  // notification for at all. Surface it as a toast (suppressed on the chats
+  // page itself, where the live conversation list already shows it).
+  // The first snapshot is swallowed: it is page-load backlog, not news. Later
+  // snapshots are true deltas (this listener stays attached across tab
+  // switches), so a message arriving while the tab is hidden still toasts on
+  // the first tick after return.
+  let chatsFirstSnap = true;
+  const onChatsPage = () => /\/admin\/chats\.html/i.test(location.pathname);
   const badgeDefs = [
     { key: 'reviews', col: 'taskAssignments', field: 'status', values: ['requested', 'submitted'] },
     { key: 'withdrawals', col: 'withdrawals', field: 'status', values: ['pending', 'under_review'] },
@@ -183,7 +194,27 @@ export async function mountAdminShell(pageId) {
         layout.querySelectorAll(`[data-admin-badge="${b.key}"]`).forEach((el) => {
           el.hidden = !n; el.textContent = n > 99 ? '99+' : n;
         });
-      }, () => {});
+        if (b.key === 'chats') {
+          if (chatsFirstSnap) chatsFirstSnap = false;
+          else if (!onChatsPage()) {
+            for (const ch of snap.docChanges()) {
+              if (ch.type !== 'added') continue;
+              const c = ch.doc.data() || {};
+              if (c.lastSenderRole !== 'user') continue;
+              const who = c.userName || c.userEmail || 'a user';
+              toast(`New message from ${who}`, {
+                title: 'Chats',
+                type: 'info',
+                duration: 7000,
+                action: { label: 'Open', onClick: () => { location.href = `/admin/chats.html?uid=${ch.doc.id}`; } }
+              });
+            }
+          }
+        }
+      // maxPollMs 10s: these badges are how an admin learns a user just wrote —
+      // the 30s default (quota backoff) made the sidebar look frozen after a
+      // new message or task request arrived from the other side.
+      }, () => {}, { maxPollMs: 10000 });
       window.addEventListener('pagehide', () => unsub());
     } catch (_) {}
   }

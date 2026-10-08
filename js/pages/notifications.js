@@ -267,7 +267,11 @@ function renderItems(items) {
     const amt = n.amountPaisa != null
       ? `<span class="act-amt ${n.amountPaisa >= 0 ? 'pos' : 'neg'}">${esc(fmtNPR(n.amountPaisa, { sign: 1 }))}</span>` : '';
     // Older notifications predate the `priority` field — fall back to type.
-    const prio = n.priority || (n.type === 'task_assigned' ? 'urgent' : n.type === 'admin_message' ? 'high' : '');
+    // The result is then coerced to one of the two known keys before it is
+    // interpolated into a class attribute, so a hand-written doc (or a future
+    // new value) can never break out of the attribute or invent a class.
+    const rawPrio = n.priority || (n.type === 'task_assigned' ? 'urgent' : n.type === 'admin_message' ? 'high' : '');
+    const prio = Object.hasOwn(PRIORITY_LABEL, rawPrio) ? rawPrio : '';
     const prioLabel = PRIORITY_LABEL[prio];
     const link = esc(safeHref(n.link, ''));
     const when = n.createdAt ? ` title="${esc(fmtDateTime(n.createdAt))}"` : '';
@@ -320,7 +324,9 @@ async function load(reset, run) {
       listEl.innerHTML = emptyState({
         icon: 'alert',
         title: 'Could not load notifications',
-        message: (e && (e.code || e.message) ? (e.code || e.message) + ' — ' : '') + 'Please refresh the page.'
+        // The raw code/message is a backend detail — logged above, generic
+        // wording shown here (details never render into the list).
+        message: 'Please refresh the page.'
       });
     }
     return null;

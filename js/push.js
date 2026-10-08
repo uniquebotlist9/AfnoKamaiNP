@@ -58,6 +58,23 @@ export function permissionState() {
   return Notification.permission;
 }
 
+/**
+ * Whether this browser currently has an active push subscription.
+ * Permission can be 'granted' while the subscription is absent — that
+ * happens after the user turns push off on this device.
+ */
+export async function hasActiveSubscription() {
+  if (!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    if (!reg) return false;
+    const sub = await reg.pushManager.getSubscription();
+    return !!sub;
+  } catch (_) {
+    return false;
+  }
+}
+
 // ─── Device identity ─────────────────────────────────────────────────
 
 /**

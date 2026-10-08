@@ -145,7 +145,7 @@ function process(file) {
 const pages = [];
 (function walk(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (['node_modules', '.git', 'optional-cloud-functions', 'scripts'].includes(e.name)) continue;
+    if (['node_modules', '.git', 'scripts'].includes(e.name)) continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) walk(p);
     else if (e.name.endsWith('.html')) pages.push(path.relative(ROOT, p));

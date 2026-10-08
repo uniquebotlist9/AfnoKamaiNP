@@ -331,9 +331,10 @@ function setupNotifications(layout, uid) {
   // badge nobody can see. Hidden → detached; returning to the tab
   // re-attaches and the snapshot below repaints the badge and surfaces any
   // priority items that arrived while the user was away.
-  // maxPollMs: the badge tolerates up to 20s of idle lag (the listener still
-  // resets to full speed whenever anything changes or this tab writes), which
-  // takes the steady-state cost from ~900 query-reads/hour down to ~180.
+  // maxPollMs: this listener still backs off to keep badge cost low, but 20s
+  // of idle lag made a fresh admin message look like "no notification at all"
+  // (the toast is the notification). 10s is the worst case now — and any
+  // change or local write resets it to the 4s base rate.
   subscribeWhileVisible(qUnread, (snap) => {
     const n = snap.size;
     unreadCount = n;
@@ -385,7 +386,7 @@ function setupNotifications(layout, uid) {
       });
     }
     firstSnapshot = false;
-  }, () => { /* badge is best-effort */ }, { maxPollMs: 20000 });
+  }, () => { /* badge is best-effort */ }, { maxPollMs: 10000 });
 
   const bell = layout.querySelector('#notif-bell');
   const wrap = layout.querySelector('#notif-wrap');

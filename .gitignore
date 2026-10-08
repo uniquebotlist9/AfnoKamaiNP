@@ -1,6 +1,6 @@
 # ── Dependencies ─────────────────────────────────────────────────────
-# The app has no build step, but scripts/ and optional-cloud-functions/
-# pull packages locally, and functions/bridge will if it is ever wired up.
+# The app has no build step, but scripts/ pulls packages locally, and
+# functions/bridge will if it is ever wired up.
 node_modules/
 *.tgz
 

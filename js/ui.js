@@ -136,15 +136,18 @@ export function confirmDialog({ title = 'Are you sure?', message = '', confirmTe
 export const WRITE_DEADLINE_MS = 45_000;
 
 const REASONS = {
-  'resource-exhausted': 'Firestore is over its free-tier write quota (20,000/day, resets around midnight Pacific). Nothing was saved — try again after it resets.',
+  // Backend-neutral on purpose: the runtime is the Appwrite adapter behind a
+  // Firestore-shaped shim, so naming either backend (or its quota numbers)
+  // would be a guess shown to the user as fact.
+  'resource-exhausted': 'The service is temporarily out of write capacity. Nothing was saved — try again in a few minutes.',
   'failed-precondition': 'A database index is still building. Give it a couple of minutes, then try again.',
-  'unavailable': 'Firestore is unreachable right now. Check your connection and try again.',
+  'unavailable': 'The service is unreachable right now. Check your connection and try again.',
   'network-request-failed': 'You appear to be offline. Check your connection and try again.',
   'permission-denied': "You don't have permission to do that.",
   'aborted': 'The change collided with another edit. Please try again.',
-  'internal': 'Firestore returned an unexpected error. Please try again.',
+  'internal': 'The server returned an unexpected error. Please try again.',
   'cancelled': 'The request was cancelled. Please try again.',
-  'deadline-exceeded': 'Firestore timed out before confirming the change. Please try again.'
+  'deadline-exceeded': 'The server timed out before confirming the change. Please try again.'
 };
 
 /**
@@ -199,7 +202,7 @@ export function withDeadline(ms, work) {
   const expired = new Promise((_, reject) => {
     timer = setTimeout(() => {
       const secs = Math.round(ms / 1000);
-      const e = new Error(`Gave up after ${secs} seconds — Firestore never confirmed the change. If the project is over its write quota nothing was saved; check the page before trying again.`);
+      const e = new Error(`Gave up after ${secs} seconds — the change was never confirmed. Check the page before trying again; if it did not save, retry in a moment.`);
       e.code = 'ui-deadline';
       reject(e);
     }, ms);
@@ -328,7 +331,7 @@ export function renderMountFailure(title = 'Could not load this page', message =
 
 // ── Badges ──
 export function badge(text, tone = 'gray', { dot = false } = {}) {
-  return `<span class="badge tone-${tone}">${dot ? '<span class="dot"></span>' : ''}${esc(text)}</span>`;
+  return `<span class="badge tone-${esc(tone)}">${dot ? '<span class="dot"></span>' : ''}${esc(text)}</span>`;
 }
 
 // ── Offline banner ──

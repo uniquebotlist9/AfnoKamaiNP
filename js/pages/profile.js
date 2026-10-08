@@ -5,7 +5,7 @@ import {
 } from 'firebase/auth';
 import { mountShell, renderRestriction } from '../shell.js';
 import { doLogout } from '../guard.js';
-import { esc, fmtDateTime, fmtRelative, isPin4, isWeakPin, passwordStrength } from '../utils.js';
+import { esc, fmtDateTime, fmtRelative, isPin4, isWeakPin, passwordStrength, authErrorText } from '../utils.js';
 import { icon } from '../icons.js';
 import { emptyState, badge, modal, btnBusy, toast, confirmDialog } from '../ui.js';
 import { changePin } from '../api.js';
@@ -164,9 +164,14 @@ content.querySelector('#pw-form').addEventListener('submit', async (e) => {
     toast('Your password has been updated.', { type: 'success', title: 'Password changed' });
     e.target.reset();
   } catch (err) {
+    // Raw Firebase errors read "Firebase: Error (auth/…)" — mapped through
+    // authErrorText instead. Errors without an auth/ code are ours already
+    // (api.js wording), so they pass through untouched.
     errEl.textContent = err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential'
       ? 'Your current password is incorrect.'
-      : (err.message || 'Could not update password. Please try again.');
+      : (String(err.code || '').startsWith('auth/')
+        ? authErrorText(err)
+        : (err.message || 'Could not update password. Please try again.'));
     errEl.hidden = false;
   }
   btnBusy(btn, false);
@@ -225,9 +230,13 @@ content.querySelector('#pin-btn').addEventListener('click', () => {
       toast('Your security PIN has been updated.', { type: 'success', title: 'PIN changed' });
     } catch (err) {
       btnBusy(btn, false);
+      // Same rule as the password form: auth/* codes are backend wording, so
+      // they go through authErrorText; anything else is already user-facing.
       errEl.textContent = String(err.code).includes('auth/') && String(err.code).includes('credential')
         ? 'Your account password was incorrect.'
-        : (err.message || 'Could not change PIN.');
+        : (String(err.code || '').startsWith('auth/')
+          ? authErrorText(err)
+          : (err.message || 'Could not change PIN.'));
       errEl.hidden = false;
     }
   });

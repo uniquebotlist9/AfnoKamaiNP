@@ -122,6 +122,12 @@
 .chart-card .chart-sub { font-size: 12.5px; color: var(--ink-3); margin: -2px 0 14px; }
 .chart-box { position: relative; height: 240px; }
 .chart-box canvas { max-height: 100%; }
+/* An empty state (icon + copy + action button) measures ~280px, i.e. taller
+   than the fixed 240px frame — and than the 200px one below. When it replaces
+   the canvas, the frame must grow to fit it, otherwise the action button
+   ("Browse tasks") spills past the card's bottom edge and overlaps the next
+   card on mobile. Every empty state marks its box with .is-empty. */
+.chart-box.is-empty { height: auto; }
 
 .legend-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 10px; }
 .legend-row .lg-item { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-2); }

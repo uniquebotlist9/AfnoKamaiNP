@@ -8,14 +8,16 @@
       "**/node_modules/**",
       "functions/**",
       "scripts/**",
-      "optional-cloud-functions/**",
       "README.md",
       "scan.cjs",
       "zz-enc-probe.html",
       "database.rules.json",
       "firestore.rules",
       "firestore.indexes.json",
-      "gui-test-screenshots/**"
+      "gui-test-screenshots/**",
+      "MIGRATION-REPORT.md",
+      "*.log",
+      "ziGoysqu"
     ],
     "cleanUrls": true,
     "trailingSlash": false,

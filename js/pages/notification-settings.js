@@ -12,7 +12,7 @@ import { toast, confirmDialog, btnBusy, emptyState } from '../ui.js';
 import { CATEGORIES, LOCKED_CATEGORIES } from '../notify.js';
 import {
   permissionState, pushSupported, enablePush, disablePush,
-  listDevices, getPrefs, savePrefs, syncSubscription
+  listDevices, getPrefs, savePrefs, syncSubscription, hasActiveSubscription
 } from '../push.js';
 
 let { content } = await mountShell('notifications');
@@ -68,7 +68,7 @@ const masterInput = content.querySelector('#master-push');
 
 // ─── Permission state ────────────────────────────────────────────────
 
-function renderPermission() {
+async function renderPermission() {
   const state = pushSupported() ? permissionState() : 'unsupported';
 
   if (state === 'unsupported') {
@@ -84,6 +84,45 @@ function renderPermission() {
   }
 
   if (state === 'granted') {
+    // Permission is granted but the subscription may be absent — that
+    // happens after the user turns push off on this device. Show the
+    // "Turn on" card in that case so they can re-enable.
+    const hasSub = await hasActiveSubscription();
+    if (!hasSub) {
+      permBlock.innerHTML = `
+        <div class="ns-perm-row">
+          <span class="ns-perm-ic">${icon('bell')}</span>
+          <div>
+            <strong>Not turned on yet</strong>
+            <div class="ns-help">Your browser will ask for permission once, when you press the button below. Nothing is requested just for visiting this page.</div>
+          </div>
+          <button class="btn primary btn-sm" id="enable-push" type="button">Turn on notifications</button>
+        </div>`;
+      permBlock.querySelector('#enable-push').addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btnBusy(btn, true, 'Waiting for your browser…');
+        const res = await enablePush();
+        btnBusy(btn, false);
+        if (res.ok) {
+          toast('Notifications are on for this device.', { type: 'success' });
+          renderPermission();
+          renderDevices();
+          return;
+        }
+        renderPermission();
+        if (res.reason === 'denied') {
+          toast('Notifications are blocked for this site.', { type: 'warn' });
+        } else if (res.reason === 'device_limit') {
+          toast(`You have reached the ${8}-device limit. Remove one below, then try again.`, { type: 'warn' });
+        } else if (res.reason === 'dismissed') {
+          toast('No problem — you can turn them on any time.');
+        } else {
+          toast('Could not turn on notifications.', { type: 'error' });
+        }
+      });
+      return;
+    }
+
     permBlock.innerHTML = `
       <div class="ns-perm-row tone-green">
         <span class="ns-perm-ic">${icon('bell')}</span>
@@ -299,7 +338,7 @@ deviceList.addEventListener('click', async (e) => {
 
 // ─── Boot ────────────────────────────────────────────────────────────
 
-renderPermission();
+renderPermission().catch(() => {});
 
 (async () => {
   prefs = await getPrefs();

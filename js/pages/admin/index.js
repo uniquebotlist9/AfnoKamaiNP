@@ -164,10 +164,12 @@ async function charts() {
   const usersCanvas = content.querySelector('#chart-growth');
   const moneyCanvas = content.querySelector('#chart-money');
   if (!hasData) {
+    usersCanvas.parentElement.classList.add('is-empty');
     usersCanvas.parentElement.innerHTML = emptyState({
       icon: 'trendUp', title: 'No activity data yet',
       message: 'Daily statistics appear here as users register and tasks are reviewed.'
     });
+    moneyCanvas.parentElement.classList.add('is-empty');
     moneyCanvas.parentElement.innerHTML = emptyState({
       icon: 'coins', title: 'No financial data yet',
       message: 'Rewards and withdrawal totals appear here once the platform processes transactions.'
@@ -176,6 +178,7 @@ async function charts() {
   }
   if (typeof Chart === 'undefined') {
     content.querySelectorAll('.chart-box').forEach((box) => {
+      box.classList.add('is-empty');
       box.innerHTML = emptyState({
         icon: 'info', title: 'Charts unavailable',
         message: 'The chart library could not be loaded. Check your connection and refresh.'

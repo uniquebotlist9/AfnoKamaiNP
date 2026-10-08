@@ -55,7 +55,7 @@ function htmlFiles(dir, out = []) {
     if (e.name === 'node_modules' || e.name === '.git' || e.name === 'functions') continue;
     const p = path.join(dir, e.name);
     if (e.isDirectory()) {
-      if (e.name === 'scripts' || e.name === 'optional-cloud-functions') continue;
+      if (e.name === 'scripts') continue;
       htmlFiles(p, out);
     } else if (e.name.endsWith('.html')) out.push(p);
   }

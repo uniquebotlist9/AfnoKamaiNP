@@ -38,7 +38,7 @@ body.auth-body { background: var(--bg); }
   display: flex; align-items: center; justify-content: center; color: var(--gold-500);
 }
 .auth-points .pt-ic .ic { width: 18px; height: 18px; }
-.auth-points h4 { color: #fff; margin: 0 0 2px; font-size: 14.5px; }
+.auth-points h3 { color: #fff; margin: 0 0 2px; font-size: 14.5px; }
 .auth-points p { margin: 0; font-size: 13px; color: #A9C4B7; }
 /* The aside is deep green in BOTH themes and paints only background-IMAGE
    gradients, so this text must clear AA against the darkest gradient stop

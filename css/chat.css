@@ -260,7 +260,7 @@
   .chat-composer { padding: 10px 12px; }
   .chat-composer textarea { min-height: 44px; font-size: 16px; /* prevent zoom on iOS */ }
   .chat-composer .send-btn { width: 44px; height: 44px; }
-  .attach-menu { width: 170px; left: auto; right: 0; }
+  .attach-menu { width: 170px; left: 0; right: auto; }
   .admin-msg-banner { padding: 8px 12px; font-size: 13px; }
   .chat-req-banner { padding: 10px 14px; }
 }

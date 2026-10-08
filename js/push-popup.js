@@ -16,10 +16,11 @@
 // Suppressed when:
 //   • afnokamai_push_popup_dismissed === "true"  (the "never again" tick)
 //   • push is unsupported (no Notification / PushManager / service worker)
-//   • permission is already decided — 'granted' means it is already on, and
-//     'denied' means the browser will refuse a second request anyway, so
-//     nagging would be futile in both cases
-//   • this browser already has an active subscription
+//   • notifications are already enabled — permission 'granted' or a live
+//     subscription. Those users go straight to the chat.
+// Not suppressed when permission is 'denied': that is NOT enabled, so the
+// card still appears — it offers unblock instructions rather than a prompt
+// the browser would silently swallow.
 
 import { icon } from './icons.js';
 import { pushSupported, hasActiveSubscription, enablePush } from './push.js';
@@ -28,20 +29,17 @@ const DISMISS_KEY = 'afnokamai_push_popup_dismissed';
 
 let popupRoot = null;
 
-/** True when this request should interrupt the user with a permission ask. */
-async function shouldPrompt() {
-  try {
-    if (localStorage.getItem(DISMISS_KEY) === 'true') return false;
-  } catch (_) { /* private mode — treat as not dismissed */ }
-  if (!pushSupported()) return false;
-  if (Notification.permission !== 'default') return false;
-  return !(await hasActiveSubscription());
-}
-
 /**
  * Show the popup (unless it is suppressed) and wait for the user to deal
  * with it. Resolves as soon as the card is gone — including immediately,
  * when nothing needs asking.
+ *
+ * The rule, exactly:
+ *   enabled (granted / subscribed) OR "Don't show again" ticked → skip, go
+ *   straight to the chat. Otherwise → popup first, chat afterwards.
+ * A blocked browser ('denied') is NOT "enabled", so those users still get
+ * the card — with unblock instructions instead of a prompt that the browser
+ * would silently refuse.
  */
 export async function promptPushOnRequest() {
   if (popupRoot) return; // never stack two prompts
@@ -49,6 +47,17 @@ export async function promptPushOnRequest() {
   try { needed = await shouldPrompt(); } catch (_) { needed = false; }
   if (!needed) return;
   await new Promise((resolve) => open(resolve));
+}
+
+/** True when this request should interrupt the user with a permission ask. */
+async function shouldPrompt() {
+  try {
+    if (localStorage.getItem(DISMISS_KEY) === 'true') return false; // ticked before
+  } catch (_) { /* private mode — treat as not dismissed */ }
+  if (!pushSupported()) return false; // nothing to enable on this browser
+  if (Notification.permission === 'granted') return false; // already enabled
+  if (await hasActiveSubscription()) return false;         // already enabled
+  return true; // 'default' → ask, 'denied' → show how to unblock
 }
 
 // ── Popup lifecycle ─────────────────────────────────────────────────────────

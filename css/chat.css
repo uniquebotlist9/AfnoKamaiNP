@@ -334,7 +334,7 @@ body.chat-viewport .conv-list { min-height: 0; }
      owns the bottom edge (the sidebar is still reachable via the topbar
      menu button, and the thread via its own back button). */
   body.chat-viewport .mobile-nav { display: none; }
-  body.chat-viewport .app-content { padding: 12px 14px 0; }
+  body.chat-viewport .app-content { padding: 10px 14px 0; }
   body.chat-viewport .chat-composer {
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
   }

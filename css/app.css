@@ -550,10 +550,10 @@
   }
   .sidebar.open { transform: none; }
   .sidebar-backdrop { position: fixed; inset: 0; background: rgba(10,26,19,.5); z-index: 55; }
-  .app-content { padding: 18px 16px calc(86px + env(safe-area-inset-bottom)); }
+  .app-content { padding: 10px 16px calc(96px + env(safe-area-inset-bottom)); }
   .menu-btn { display: inline-flex; }
   .mobile-nav { display: grid; }
-  .topbar { position: sticky; top: 0; z-index: 50; background: var(--bg); padding: 8px 0; margin-bottom: 14px; }
+  .topbar { position: sticky; top: 0; z-index: 50; background: var(--bg); padding: 8px 0; margin-bottom: 6px; }
   .withdraw-hero { grid-template-columns: 1fr; }
   .withdraw-main-card .wm-value { font-size: 34px; }
   .hero-greeting { padding: 20px; }

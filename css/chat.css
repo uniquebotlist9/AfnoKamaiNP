@@ -2,19 +2,28 @@
    AfnoKamai — Real-time chat (user + admin)
    ═══════════════════════════════════════════════════════════ */
 
-.chat-layout { display: grid; grid-template-columns: 320px 1fr; gap: 16px; height: calc(100vh - 150px); min-height: 480px; }
+.chat-layout { 
+  display: grid; 
+  grid-template-columns: 320px 1fr; 
+  gap: 16px; 
+  height: calc(100vh - 150px); 
+  min-height: 480px; 
+  transition: grid-template-columns .25s var(--ease-out);
+}
 .chat-layout.full { grid-template-columns: 1fr; }
 
 /* conversation list */
 .conv-list { display: flex; flex-direction: column; overflow: hidden; }
 .conv-list .card-head { padding: 14px 16px; }
-.conv-items { overflow-y: auto; flex: 1; }
+.conv-items { overflow-y: auto; flex: 1; -webkit-overflow-scrolling: touch; }
 .conv-item {
   display: flex; gap: 11px; padding: 13px 16px; border-bottom: 1px solid var(--line);
   cursor: pointer; align-items: center; background: none; border-left: none; border-right: none;
   border-top: none; width: 100%; text-align: left; font-family: var(--font);
+  transition: background .15s var(--ease-standard), box-shadow .15s var(--ease-standard), transform .1s var(--ease-standard);
 }
 .conv-item:hover { background: var(--surface-2); }
+.conv-item:active { transform: scale(0.99); }
 .conv-item.active { background: var(--green-50); box-shadow: inset 3px 0 0 var(--green-600); }
 .conv-item .cv-body { flex: 1; min-width: 0; }
 .conv-item .cv-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
@@ -29,6 +38,7 @@
   background: var(--green-600); color: #fff; font-size: 10.5px; font-weight: 700;
   min-width: 19px; height: 19px; border-radius: 999px; display: inline-flex;
   align-items: center; justify-content: center; padding: 0 6px; flex: none;
+  animation: bounce-in .3s var(--ease-out);
 }
 /* Admin read receipt on the conversation row: "Seen 5 mins ago" / "Delivered" */
 .conv-item .cv-receipt { display: block; margin-top: 3px; font-size: 11px; font-weight: 600; color: var(--ink-3); }
@@ -38,7 +48,7 @@
 .cv-status .presence-dot { width: 7px; height: 7px; }
 
 /* thread */
-.chat-thread { display: flex; flex-direction: column; overflow: hidden; }
+.chat-thread { display: flex; flex-direction: column; overflow: hidden; animation: fade-in .3s var(--ease-out); }
 
 /* ── Prominent banner for new admin messages ── */
 .admin-msg-banner {
@@ -243,4 +253,27 @@
   .chat-back { display: inline-flex; }
   .msg-row { max-width: 92%; }
   .chat-composer { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 760px) {
+  .chat-messages { padding: 14px; }
+  .chat-composer { padding: 10px 12px; }
+  .chat-composer textarea { min-height: 44px; font-size: 16px; /* prevent zoom on iOS */ }
+  .chat-composer .send-btn { width: 44px; height: 44px; }
+  .attach-menu { width: 170px; left: auto; right: 0; }
+  .admin-msg-banner { padding: 8px 12px; font-size: 13px; }
+  .chat-req-banner { padding: 10px 14px; }
+}
+
+@media (max-width: 480px) {
+  .chat-head { padding: 10px 12px; }
+  .chat-head .ch-name { font-size: 14px; }
+  .conv-item { padding: 11px 12px; gap: 9px; }
+  .cv-name { font-size: 13px; }
+  .cv-last { font-size: 11.5px; }
+  .cv-time { font-size: 10.5px; }
+  .msg-bubble { padding: 8px 11px 6px; }
+  .msg-text { font-size: 13.5px; }
+  .msg-meta { font-size: 10px; }
+  .load-older { margin-bottom: 6px; }
 }

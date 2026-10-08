@@ -1,4 +1,4 @@
-// ─── Email verification page ─────────────────────────────────────────
+// ─── Email verification page ─────────────────────────────────
 import { auth, db, isConfigured } from '../firebase.js';
 import { sendEmailVerification, signOut } from 'firebase/auth';
 import { doc, updateDoc as fsUpdateDoc } from 'firebase/firestore';
@@ -7,7 +7,6 @@ import { doc, updateDoc as fsUpdateDoc } from 'firebase/firestore';
 // rejecting, so an unbounded write can leave a promise pending indefinitely.
 const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(...a));
 import { ensureConfigured, destinationFor, fetchProfile, doLogout } from '../guard.js';
-import { esc } from '../utils.js';
 import { toast, withDeadline, WRITE_DEADLINE_MS } from '../ui.js';
 import { icon } from '../icons.js';
 
@@ -21,14 +20,29 @@ if (isConfigured()) {
 
   document.getElementById('mail-ic').innerHTML = icon('bell');
 
+  // ── Polling cadence ─────────────────────────────────────────
+  // Verifying an email is a real-world 30–90 second detour: open the
+  // inbox, click the link, come back to this tab. The old poller
+  // counted TICKS, not failures, and gave up after three of them
+  // (~24 s) — telling users with a perfectly healthy connection to
+  // "refresh the page". So: check fast at first, ease off with
+  // backoff, keep going while the tab is open, and only ever complain
+  // after several consecutive FAILURES (a genuine network problem).
+  const POLL_START_MS = 6000;
+  const POLL_MAX_MS = 15000;
+  const MAX_CONSECUTIVE_FAILURES = 4;
+
   let user = null;
   let pollTimer = null;
+  let pollDelay = POLL_START_MS;
+  let consecutiveFailures = 0;
   let routed = false;
+  let statusState = ''; // last painted status, so identical text is never re-rendered
 
-  // Auth's `emailVerified` is the authority, but the Firestore users doc starts
+  // Auth's `emailVerified` is the authority, but the users doc starts
   // as `false` and nothing ever wrote it back — so the admin panel showed
-  // "Email verified: No" forever. Mirror it once, guarded so a repeat call or a
-  // permissions failure can never break the verification flow.
+  // "Email verified: No" forever. Mirror it once, guarded so a repeat call
+  // or a permissions failure can never break the verification flow.
   let synced = false;
   async function syncVerifiedFlag(u) {
     if (synced || !u || !u.emailVerified || !db) return;
@@ -47,61 +61,84 @@ if (isConfigured()) {
     statusEl.innerHTML = html;
   }
 
+  /** Paint a status only when it actually changed — no DOM churn every poll. */
+  function showStatus(key, html, cls = '') {
+    if (statusState === key) return;
+    statusState = key;
+    setStatus(html, cls);
+  }
+
+  const WAITING_HTML = `${icon('clock')} Waiting for verification… We check automatically every few seconds.`;
+  function showWaiting() {
+    showStatus('waiting', WAITING_HTML);
+  }
+
   function route(user, profile) {
     if (routed) return;
     routed = true;
     clearTimeout(pollTimer);
-    const target = destinationFor(user, profile);
-    if (target === '/verify-email.html') {
-      routed = false; // already here
-      setStatus(`${icon('check')} Email verified!`, 'ok');
-      location.replace('/profile-setup.html');
-      return;
-    }
-    location.replace(target);
+    // Let the success state be visible for a beat before the page
+    // changes — a flash of "Email verified!" reads as confirmation.
+    setTimeout(() => location.replace(destinationFor(user, profile)), 700);
   }
 
   async function checkNow() {
-    if (!auth.currentUser) return;
+    const current = auth.currentUser;
+    if (!current) return false;
     try {
-      await auth.currentUser.reload();
-      if (auth.currentUser.emailVerified) {
-        syncVerifiedFlag(auth.currentUser);
+      await current.reload();
+      if (current.emailVerified) {
+        consecutiveFailures = 0;
+        syncVerifiedFlag(current);
         setStatus(`${icon('check')} Email verified!`, 'ok');
-        const profile = await fetchProfile(auth.currentUser.uid);
-        route(auth.currentUser, profile);
+        statusState = 'verified';
+        const profile = await fetchProfile(current.uid).catch(() => null);
+        route(current, profile);
         return true;
       }
-      // Only show "waiting" message if we still have a valid user session
-      if (auth.currentUser) {
-        setStatus(`${icon('clock')} Waiting for verification… We check automatically every few seconds.`);
-      }
+      consecutiveFailures = 0;
+      showWaiting();
       return false;
-    } catch (e) {
-      // Silently handle connection errors — don't spam the console or UI
-      // if the user has already navigated away or the session expired.
-      if (auth.currentUser) {
-        setStatus(`${icon('alert')} Couldn't check status right now.`);
+    } catch (_) {
+      // Network hiccup — count it, but only speak up after several in a
+      // row so a single blip never interrupts the flow.
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        showStatus(
+          'offline',
+          `${icon('alert')} We can't reach the server right now. Check your connection, then press "Check again".`
+        );
       }
       return false;
     }
   }
 
-  function startPolling() {
-    clearInterval(pollTimer);
-    // Poll every 8 seconds instead of 5, with a maximum of 3 retries
-    // to avoid overwhelming Firebase Auth when the connection is unstable.
-    let attempts = 0;
-    pollTimer = setInterval(() => {
-      attempts++;
-      if (attempts > 3) {
-        clearInterval(pollTimer);
-        setStatus(`${icon('alert')} Connection issue — please refresh the page.`);
-        return;
-      }
-      checkNow();
-    }, 8000);
+  /** One-shot timer (not setInterval) so a slow check never queues up
+   *  behind itself, and the interval can back off over time. */
+  function scheduleNext() {
+    clearTimeout(pollTimer);
+    if (routed) return;
+    pollTimer = setTimeout(async () => {
+      const done = await checkNow();
+      if (done || routed) return;
+      pollDelay = Math.min(pollDelay + 2000, POLL_MAX_MS);
+      scheduleNext();
+    }, pollDelay);
   }
+
+  // The user just switched back to this tab — almost certainly from
+  // clicking the link in their email. Check right away instead of
+  // making them wait for the next tick.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || routed) return;
+    const current = auth.currentUser;
+    if (!current || current.emailVerified) return;
+    clearTimeout(pollTimer);
+    (async () => {
+      const done = await checkNow();
+      if (!done && !routed) scheduleNext();
+    })();
+  });
 
   function setResendCountdown(sec) {
     if (sec <= 0) {
@@ -126,12 +163,14 @@ if (isConfigured()) {
       emailPill.textContent = u.email;
       if (u.emailVerified) {
         syncVerifiedFlag(u);
-        const profile = await fetchProfile(u.uid);
+        setStatus(`${icon('check')} Email verified!`, 'ok');
+        statusState = 'verified';
+        const profile = await fetchProfile(u.uid).catch(() => null);
         route(u, profile);
         return;
       }
       await checkNow();
-      startPolling();
+      scheduleNext();
       setResendCountdown(0);
     });
   }
@@ -143,18 +182,19 @@ if (isConfigured()) {
   });
 
   resendBtn.addEventListener('click', async () => {
-    if (!user) return;
+    const current = auth.currentUser || user;
+    if (!current) return;
     resendBtn.disabled = true;
     resendBtn.textContent = 'Sending…';
     try {
-      await sendEmailVerification(user);
+      await sendEmailVerification(current);
       toast('Verification email sent. Please check your inbox and spam folder.', { type: 'success', title: 'Email sent' });
       setResendCountdown(RESEND_COOLDOWN);
     } catch (err) {
       const msg = String(err && err.code || '').includes('too-many-requests')
         ? 'Too many requests. Please wait a minute before trying again.'
         : 'Could not send the email right now. Please try again shortly.';
-      toast(msg, { type: 'error', title: 'Couldn\'t send email' });
+      toast(msg, { type: 'error', title: "Couldn't send email" });
       setResendCountdown(20);
     }
   });

@@ -36,7 +36,37 @@ export function isRedirect(e) {
   return !!e && (e.isRedirect === true || e.message === 'redirect');
 }
 
-// Keep the console clean: swallow ONLY our own navigation signal.
+/**
+ * Signal for "this page intentionally stopped rendering" — a
+ * restricted (banned) account whose restriction screen is already
+ * on screen, or a session that failed to mount behind the friendly
+ * error screen. Same convention as redirectSignal: swept by the
+ * listeners below so intentional stops stay silent while genuine
+ * failures still get reported.
+ */
+export function restrictedSignal() {
+  const e = new Error('restricted');
+  e.name = 'RestrictedSignal';
+  e.isRestricted = true;
+  return e;
+}
+
+export function isRestricted(e) {
+  return !!e && (e.isRestricted === true || e.message === 'restricted');
+}
+
+export function stopSignal() {
+  const e = new Error('stopped');
+  e.name = 'StopSignal';
+  e.isStop = true;
+  return e;
+}
+
+export function isStop(e) {
+  return !!e && (e.isStop === true || e.name === 'StopSignal');
+}
+
+// Keep the console clean: swallow ONLY our own navigation/stop signals.
 //
 // Two channels, because a module top-level `await` rejection is reported
 // differently from a normal one:
@@ -45,10 +75,10 @@ export function isRedirect(e) {
 //     UNCAUGHT EXCEPTION, so preventDefault() on 'unhandledrejection' alone
 //     leaves a red console error behind. Caught here too.
 window.addEventListener('unhandledrejection', (ev) => {
-  if (isRedirect(ev.reason)) ev.preventDefault();
+  if (isRedirect(ev.reason) || isRestricted(ev.reason) || isStop(ev.reason)) ev.preventDefault();
 });
 window.addEventListener('error', (ev) => {
-  if (isRedirect(ev.error)) ev.preventDefault();
+  if (isRedirect(ev.error) || isRestricted(ev.error) || isStop(ev.error)) ev.preventDefault();
 });
 
 export function onAuth(cb) {
@@ -94,8 +124,16 @@ export async function routeOnBoot({ onStage = () => {} } = {}) {
 export async function redirectIfAuthed() {
   const user = await waitForAuth();
   if (!user) return null;
-  const profile = await fetchProfile(user.uid);
-  location.replace(destinationFor(user, profile));
+  try {
+    const profile = await fetchProfile(user.uid);
+    location.replace(destinationFor(user, profile));
+  } catch (_) {
+    // Profile read failed (usually an offline blip right after sign-in).
+    // Stay put and stay silent: the login form's submit flow retries this
+    // exact redirect, and re-submitting is instant while the session
+    // persists. Surfacing the failure would wrongly call a successful
+    // login an error.
+  }
   return user;
 }
 

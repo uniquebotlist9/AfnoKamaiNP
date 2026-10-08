@@ -2,6 +2,7 @@
 import { db } from '../firebase.js';
 import { collection, query, where, orderBy, limit, getDocs, doc, getDoc } from 'firebase/firestore';
 import { mountShell, renderRestriction } from '../shell.js';
+import { restrictedSignal } from '../guard.js';
 import { watchWallet, watchPlatformConfig, fetchWalletSummary } from '../wallet.js';
 import { esc, fmtNPR, fmtDateTime, countdownUntil, toPaisa, isNepaliPhone, isPin4, fmtRelative } from '../utils.js';
 import { WITHDRAWAL_STATUS } from '../utils.js';
@@ -13,7 +14,7 @@ let { user, profile, content } = await mountShell('withdraw');
 if (profile.status === 'banned') {
   document.getElementById('page-skeleton')?.remove();
   renderRestriction(profile);
-  throw new Error('restricted');
+  throw restrictedSignal();
 }
 document.getElementById('page-skeleton')?.remove();
 

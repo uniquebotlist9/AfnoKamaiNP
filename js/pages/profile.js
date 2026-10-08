@@ -4,7 +4,7 @@ import {
   EmailAuthProvider, reauthenticateWithCredential, updatePassword
 } from 'firebase/auth';
 import { mountShell, renderRestriction } from '../shell.js';
-import { doLogout } from '../guard.js';
+import { doLogout, restrictedSignal } from '../guard.js';
 import { esc, fmtDateTime, fmtRelative, isPin4, isWeakPin, passwordStrength, authErrorText } from '../utils.js';
 import { icon } from '../icons.js';
 import { emptyState, badge, modal, btnBusy, toast, confirmDialog } from '../ui.js';
@@ -15,7 +15,7 @@ let { user, profile, content } = await mountShell('profile');
 if (profile.status === 'banned') {
   document.getElementById('page-skeleton')?.remove();
   renderRestriction(profile);
-  throw new Error('restricted');
+  throw restrictedSignal();
 }
 document.getElementById('page-skeleton')?.remove();
 

@@ -4,6 +4,7 @@ import {
   collection, query, where, orderBy, limit, getDocs, doc, getDoc
 } from 'firebase/firestore';
 import { mountShell, renderRestriction } from '../shell.js';
+import { restrictedSignal } from '../guard.js';
 import { watchWallet, watchPlatformConfig, fetchWalletSummary, fetchRecentTransactions, txTypeMeta } from '../wallet.js';
 import { esc, safeHref, fmtNPR, fmtRelative, greeting, countdownUntil } from '../utils.js';
 import { icon } from '../icons.js';
@@ -31,7 +32,7 @@ let { user, profile, content } = await mountShell('dashboard');
 if (profile.status === 'banned') {
   document.getElementById('page-skeleton')?.remove();
   renderRestriction(profile);
-  throw new Error('restricted');
+  throw restrictedSignal();
 }
 
 // ── Asia/Kathmandu day bucketing ──────────────────────────────────────

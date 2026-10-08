@@ -226,7 +226,7 @@ async function loadCounts() {
     TABS.forEach((t, i) => {
       const el = content.querySelector(`[data-count="${t.id}"]`);
       if (!el) return;
-      const n = i === 0 ? total : i === 1 ? unread : results[i + 1].data().count;
+      const n = i === 0 ? total : i === 1 ? unread : results[i].data().count;
       el.hidden = !n;
       el.textContent = n > 99 ? '99+' : String(n);
     });

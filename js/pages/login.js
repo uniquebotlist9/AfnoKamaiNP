@@ -38,22 +38,43 @@ if (isConfigured()) {
     btnBusy(btn, true, 'Logging in…');
     try {
       await signInWithEmailAndPassword(auth, email, password);
-      if (document.getElementById('remember').checked) {
-        try { localStorage.setItem('ak_remember_email', email); } catch (_) {}
-      } else {
-        try { localStorage.removeItem('ak_remember_email'); } catch (_) {}
-      }
-      // redirectIfAuthed's onAuthStateChanged listener handles routing;
-      // trigger it explicitly for immediate feedback:
-      const { destinationFor, fetchProfile } = await import('../guard.js');
-      const user = auth.currentUser;
-      const profile = await fetchProfile(user.uid);
-      location.replace(destinationFor(user, profile));
     } catch (err) {
       btnBusy(btn, false);
       showFormError(errId, authErrorText(err));
+      return;
     }
+    if (document.getElementById('remember').checked) {
+      try { localStorage.setItem('ak_remember_email', email); } catch (_) {}
+    } else {
+      try { localStorage.removeItem('ak_remember_email'); } catch (_) {}
+    }
+    // The auth-state listener from redirectIfAuthed() routes as soon
+    // as the profile is readable. This explicit hop just skips the
+    // wait — and a failure here must NEVER surface as an error,
+    // because the login itself succeeded. Retry briefly (a transient
+    // blip usually clears in seconds), then hand off silently:
+    // re-submitting is instant while the session persists.
+    await redirectAfterLogin(btn);
   });
+
+  /** Navigate to the user's destination, quietly. */
+  async function redirectAfterLogin(btn) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const { destinationFor, fetchProfile } = await import('../guard.js');
+        const user = auth.currentUser;
+        if (!user) { btnBusy(btn, false); return; }
+        const profile = await fetchProfile(user.uid);
+        location.replace(destinationFor(user, profile));
+        return;
+      } catch (_) {
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+    // Still unreachable (offline): release the button and stay put.
+    // Nothing failed from the user's point of view — they are signed in.
+    btnBusy(btn, false);
+  }
 
   // Forgot password
   document.getElementById('forgot-link').addEventListener('click', (e) => {

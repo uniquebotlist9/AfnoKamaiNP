@@ -4,6 +4,7 @@ import {
   collection, query, where, orderBy, limit, getDocs, doc, getDoc, Timestamp
 } from 'firebase/firestore';
 import { mountShell, renderRestriction } from '../shell.js';
+import { restrictedSignal } from '../guard.js';
 import { esc, fmtNPR, fmtRelative, countdownUntil, fmtDateTime, fmtDate, DIFFICULTY } from '../utils.js';
 import { icon } from '../icons.js';
 import { emptyState, skeletonRows, badge, confirmDialog, btnBusy, toast } from '../ui.js';
@@ -14,7 +15,7 @@ let { user, profile, content } = await mountShell('earn');
 if (profile.status === 'banned') {
   document.getElementById('page-skeleton')?.remove();
   renderRestriction(profile);
-  throw new Error('restricted');
+  throw restrictedSignal();
 }
 document.getElementById('page-skeleton')?.remove();
 
@@ -256,7 +257,7 @@ async function submitFlow(assignmentId) {
     width: 520,
     body: `
       <p class="confirm-msg">Please confirm that you have completed the task according to the provided instructions.
-      ${needsEvidence ? '<strong>This task requires evidence</strong> — send a screenshot or photo in the chat first, then describe it below.</strong>' : ''} False claims can lead to rejection or penalties.</p>
+      ${needsEvidence ? '<strong>This task requires evidence</strong> — send a screenshot or photo in the chat first, then describe it below.' : ''} False claims can lead to rejection or penalties.</p>
       <div class="field">
         <label class="label">Completion note</label>
         <textarea class="textarea" id="sub-note" maxlength="1000" placeholder="Briefly describe what you did…"></textarea>

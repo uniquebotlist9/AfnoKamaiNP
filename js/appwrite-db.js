@@ -251,9 +251,18 @@ export function query(base, ...parts) {
   let path = null;
   let group = null;
   const constraints = [];
-  if (base && base.__coll) path = base.path;
-  else if (base && base.__cg) group = base.group;
-  else if (base && base.__q) {
+  if (base && base.__coll) {
+    path = base.path;
+    // Add injected fields from subcollection path as where constraints
+    const resolved = resolvePath(base.path);
+    if (resolved.inject) {
+      for (const [field, value] of Object.entries(resolved.inject)) {
+        constraints.push({ __c: 'where', field, op: '==', value });
+      }
+    }
+  } else if (base && base.__cg) {
+    group = base.group;
+  } else if (base && base.__q) {
     path = base.path;
     group = base.group;
     constraints.push(...base.constraints);
@@ -661,8 +670,14 @@ function makeQuerySnapshot(table, rows, previous) {
 }
 
 async function readRaw(ref) {
+  // Use query-by-$id instead of direct GET: returns 200 with empty array
+  // for missing rows (no 404 console noise), matching Firestore's null-on-missing.
+  const q = { method: 'equal', attribute: '$id', values: [ref.documentId] };
+  const params = `queries[0]=${encodeURIComponent(JSON.stringify(q))}&limit=1`;
   try {
-    return await api('GET', rowUrl(ref));
+    const res = await api('GET', `${rowsBase(ref.table)}?${params}`);
+    const rows = res.documents || res.rows || res.data || [];
+    return rows[0] || null;
   } catch (e) {
     if (e.code === 'not-found') return null;
     throw e;

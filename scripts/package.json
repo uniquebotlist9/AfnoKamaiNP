@@ -3,6 +3,7 @@
   "private": true,
   "description": "Local admin tooling (works on the free Firebase plan)",
   "dependencies": {
+    "dotenv": "^16.4.5",
     "firebase-admin": "^12.6.0"
   }
 }

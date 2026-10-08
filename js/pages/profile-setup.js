@@ -120,7 +120,9 @@ if (isConfigured()) {
     const btn = document.getElementById('pin-btn');
     btnBusy(btn, true, 'Securing your account…');
     try {
-      const profile = await fetchProfile(auth.currentUser.uid);
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error('Your session expired. Please log in again.');
+      const profile = await fetchProfile(currentUser.uid);
       if (!profile || !profile.profileComplete) {
         // personal step not yet persisted — save both steps together
         const fullName = document.getElementById('fullName').value.trim().replace(/\s+/g, ' ');

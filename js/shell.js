@@ -13,14 +13,13 @@ import {
 // exhausted backend. onSnapshot is untouched: it is a stream, not a promise.
 const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(...a));
 const writeBatch = (...a) => boundBatch(fsWriteBatch(...a));
-import { requireAppAccess, doLogout, ensureConfigured, redirectSignal, isRedirect } from './guard.js';
+import { requireAppAccess, doLogout, ensureConfigured, redirectSignal, isRedirect, stopSignal } from './guard.js';
 import { icon, logo } from './icons.js';
 import { esc, fmtRelative, initials } from './utils.js';
 import { initOfflineBanner, emptyState, renderMountFailure, modal, toast, withDeadline, boundBatch, WRITE_DEADLINE_MS } from './ui.js';
 import { subscribeWhileVisible } from './listen.js';
 import { initTheme, mountThemeControl } from './theme.js';
 import { initInstallPopup } from './install-popup.js';
-import { openNotificationPanel } from './notification-center.js';
 import { autoSyncIfGranted, pushSupported } from './push.js';
 
 const PAGES = {
@@ -64,7 +63,9 @@ export async function mountShell(pageId) {
     // 'redirect' means we are already navigating away — stay quiet.
     if (isRedirect(e)) throw e;
     renderMountFailure('Could not load your session', 'Check your connection and try again.');
-    throw e;
+    // The friendly screen is up; stop this page silently instead of
+    // surfacing a module-level error behind it.
+    throw stopSignal();
   }
   const { user, profile } = access;
 
@@ -319,22 +320,10 @@ function setupNotifications(layout, uid) {
   );
   const shownPopups = loadShownPopups();
   let firstSnapshot = true;
-  // Re-attaching after the tab returns counts as a fresh first snapshot, so
-  // the batch rules below still apply then (newest urgent popup, staggered
-  // toasts) instead of opening one modal per notification missed while away.
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) firstSnapshot = true;
   });
 
-  // Gated on visibility: this listener mounts on EVERY page, so a
-  // backgrounded tab is exactly where a permanent stream wastes reads on a
-  // badge nobody can see. Hidden → detached; returning to the tab
-  // re-attaches and the snapshot below repaints the badge and surfaces any
-  // priority items that arrived while the user was away.
-  // maxPollMs: this listener still backs off to keep badge cost low, but 20s
-  // of idle lag made a fresh admin message look like "no notification at all"
-  // (the toast is the notification). 10s is the worst case now — and any
-  // change or local write resets it to the 4s base rate.
   subscribeWhileVisible(qUnread, (snap) => {
     const n = snap.size;
     unreadCount = n;
@@ -359,8 +348,6 @@ function setupNotifications(layout, uid) {
 
       if (urgent) {
         if (firstSnapshot) { urgentBacklog.push(item); continue; }
-        // Remembered only when it really rendered — a popup skipped because
-        // the chat is open must still fire on the next page.
         if (showPriorityPopup(item)) rememberPopup(shownPopups, item.id);
         continue;
       }
@@ -370,14 +357,10 @@ function setupNotifications(layout, uid) {
     }
 
     if (firstSnapshot && urgentBacklog.length) {
-      // Never stack dialogs: surface the newest assignment, leave the rest on
-      // the badge so the next page (or session) picks the following one up.
       urgentBacklog.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
       const newest = urgentBacklog[0];
       if (showPriorityPopup(newest)) rememberPopup(shownPopups, newest.id);
     } else if (firstSnapshot && highBacklog.length) {
-      // Every admin message is high priority — surface them all, one at a
-      // time with a small delay so they don't stack on top of each other.
       highBacklog.sort((a, b) => tsMs(b.createdAt) - tsMs(a.createdAt));
       highBacklog.forEach((item, i) => {
         setTimeout(() => {
@@ -389,17 +372,8 @@ function setupNotifications(layout, uid) {
   }, () => { /* badge is best-effort */ }, { maxPollMs: 10000 });
 
   const bell = layout.querySelector('#notif-bell');
-  const wrap = layout.querySelector('#notif-wrap');
-  bell.addEventListener('click', async () => {
-    const existing = wrap.querySelector('.notif-pop');
-    if (existing) { existing.remove(); return; }
-    // The panel owns its own rendering, category filtering, read-marking and
-    // the device permission card. See js/notification-center.js.
-    await openNotificationPanel({ wrap, uid });
-  });
-  document.addEventListener('click', (e) => {
-    const pop = wrap.querySelector('.notif-pop');
-    if (pop && !pop.contains(e.target) && !bell.contains(e.target)) pop.remove();
+  bell.addEventListener('click', () => {
+    location.href = 'notifications.html';
   });
 }
 
@@ -424,12 +398,16 @@ function startHeartbeat(uid) {
   window.addEventListener('beforeunload', () => { try { beat(true); } catch (_) {} });
 }
 
-// Deliberately NOT visibility-gated: this is the one check that must
-// react when an admin flips maintenance. Since the config doc lives in
-// Appwrite Tables and may not yet be provisioned, we do a single read
-// rather than an ongoing subscription — this avoids repeated 404 errors
-// when the table/row is missing. If the admin later enables maintenance
-// mode, users will see the change after refreshing the page.
+// Deliberately NOT visibility-gated in the adapter sense: this is
+// the one check that must react when an admin flips maintenance.
+// Since the config doc lives in Appwrite Tables and may not yet be
+// provisioned, we do a single read rather than an ongoing
+// subscription — this avoids repeated 404 errors when the
+// table/row is missing. The check is throttled to once a minute
+// per browser (not per page load) so navigating the app doesn't
+// amplify into a read storm, and it re-runs when the user returns
+// to the tab — so an admin's toggle is noticed within a minute
+// even without a refresh.
 //
 // (If the table/row is provisioned in Appwrite, the read will return the
 // current state immediately.)
@@ -437,17 +415,23 @@ async function watchMaintenance(profile) {
   // Admins are exempt from the redirect, so the read only buys a
   // non-admin a duplicate of what the last page load already fetched.
   if (profile && profile.role === 'admin') return;
-  try {
-    const last = Number(localStorage.getItem('ak_maint_checked_at') || 0);
-    if (Date.now() - last < 5 * 60 * 1000) return;
-    localStorage.setItem('ak_maint_checked_at', String(Date.now()));
-    const snap = await getDoc(doc(db, 'config', 'maintenance'));
-    const m = snap.data();
-    if (m && m.enabled) location.replace('maintenance.html');
-  } catch (_) {
-    // Config row missing — maintenance mode is effectively off.
-    // No-op: the admin can enable it later and users will see it on refresh.
-  }
+  const check = async () => {
+    try {
+      const last = Number(localStorage.getItem('ak_maint_checked_at') || 0);
+      if (Date.now() - last < 60 * 1000) return;
+      localStorage.setItem('ak_maint_checked_at', String(Date.now()));
+      const snap = await getDoc(doc(db, 'config', 'maintenance'));
+      const m = snap.data();
+      if (m && m.enabled) location.replace('maintenance.html');
+    } catch (_) {
+      // Config row missing — maintenance mode is effectively off.
+      // No-op: the admin can enable it later and users will see it on refresh.
+    }
+  };
+  await check();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') check();
+  });
 }
 
 function registerSW() {

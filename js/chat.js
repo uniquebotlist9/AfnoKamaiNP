@@ -296,6 +296,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   let pageLimit = MSG_PAGE;
   let hasOlder = false;
   let latestMsgs = [];
+  let latestMsgDocs = [];
   let pending = [];
   const pendingReconcilers = new Set(); // interval ids that retire sent-but-unconfirmed bubbles
   let nearBottom = true;
@@ -348,13 +349,15 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       limit(pageLimit)
     );
     return subscribeWhileVisible(q, (snap) => {
-      latestMsgs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).reverse();
+      // Map snapshot docs to message objects with both logical id and Appwrite rowId
+      latestMsgDocs = snap.docs;
+      latestMsgs = snap.docs.map((d) => ({ id: d.id, rowId: d.ref.documentId, ...d.data() })).reverse();
       hasOlder = snap.size === pageLimit;
       // Show a prominent banner for new admin messages while the user is
       // already on the chat page — every admin message is high priority.
       if (role === 'user') announceNewAdminMsg();
       renderAll();
-      markRead(latestMsgs);
+      markRead(latestMsgDocs);
     }, () => {
       // Drop the render cache: otherwise a later successful snapshot with
       // identical HTML would be skipped and the error panel would stick forever.
@@ -483,7 +486,9 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
         });
         if (!ok) return;
         try {
-          await deleteDoc(doc(db, 'conversations', cid, 'messages', btn.dataset.del));
+          // data-del now contains the Appwrite rowId; construct the correct ref
+          const rowId = btn.dataset.del;
+          await deleteDoc(doc(db, 'messages', rowId));
           toast('Message deleted.', { type: 'success' });
         } catch (err) { toast(err.message, { type: 'error' }); }
       });
@@ -500,12 +505,15 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   }
 
   // ── read receipts ──
-  async function markRead(msgs) {
+  async function markRead(msgDocs) {
     try {
-      const unreadOthers = msgs.filter((m) => m.senderRole !== role && !m.readAt);
+      const unreadOthers = msgDocs.filter((d) => {
+        const m = d.data();
+        return m.senderRole !== role && !m.readAt;
+      });
       if (!unreadOthers.length) return; // nothing to mark — avoid churning the conversation doc on every snapshot
       const batch = writeBatch(db);
-      unreadOthers.forEach((m) => batch.update(doc(db, 'conversations', cid, 'messages', m.id), { readAt: serverTimestamp() }));
+      unreadOthers.forEach((d) => batch.update(d.ref, { readAt: serverTimestamp() }));
       batch.update(doc(db, 'conversations', cid), {
         [role === 'user' ? 'unreadForUser' : 'unreadForAdmin']: 0,
         [role === 'user' ? 'userLastReadAt' : 'adminLastReadAt']: serverTimestamp()
@@ -774,8 +782,8 @@ function renderMessage(m, role) {
       : `<div class="msg-meta">Sending…</div>`;
   } else {
     const time = m.createdAt && m.createdAt.toDate ? fmtTime(m.createdAt) : '';
-    const delBtn = role === 'admin' && m.id
-      ? ` <button class="msg-del" data-del="${esc(m.id)}" title="Delete message">${icon('trash')}</button>`
+    const delBtn = role === 'admin' && m.rowId
+      ? ` <button class="msg-del" data-del="${esc(m.rowId)}" title="Delete message">${icon('trash')}</button>`
       : '';
     inner += `<div class="msg-meta">${esc(time)}${receiptHtml(m, role)}${delBtn}</div>`;
   }

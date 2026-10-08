@@ -11,7 +11,7 @@ const ASSETS = [
   'css/global.css?v=5',
   'css/auth.css?v=2',
   'css/app.css?v=7',
-  'css/chat.css?v=2',
+  'css/chat.css?v=3',
   'css/admin.css'
 ];
 

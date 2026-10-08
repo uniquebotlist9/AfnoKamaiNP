@@ -86,7 +86,7 @@ export async function mountAdminShell(pageId) {
       </nav>
     </aside>
     <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
-    <div style="min-width:0">
+    <div class="app-main" style="min-width:0">
       <header class="topbar">
         <button class="btn-icon menu-btn" id="menu-btn" aria-label="Open navigation">${icon('menu')}</button>
         <div class="topbar-actions">

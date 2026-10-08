@@ -277,3 +277,65 @@
   .msg-meta { font-size: 10px; }
   .load-older { margin-bottom: 6px; }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Fixed-viewport chat (Instagram / native-chat behaviour)
+   ───────────────────────────────────────────────────────────
+   The chat pages pin the entire shell to the viewport: the
+   sidebar, topbar, page head and composer never move. Only
+   .chat-messages scrolls, so the browser page itself never
+   scrolls — swiping inside the thread moves the messages up
+   and down, exactly like a native chat app. Older messages
+   are reached by scrolling the thread, not the page.
+   Applied via the `chat-viewport` body class set by the two
+   chat entry points (js/pages/chat.js and
+   js/pages/admin/chats.js).
+   ═══════════════════════════════════════════════════════════ */
+body.chat-viewport { overflow: hidden; }
+
+/* The shell is exactly one screen tall — nothing may push it taller. */
+body.chat-viewport .app-layout {
+  height: 100vh; height: 100dvh; min-height: 0; overflow: hidden;
+}
+/* The unclassed wrapper div between the sidebar and the content is now a
+   flex column so the topbar and the content split the screen height. */
+body.chat-viewport .app-main {
+  display: flex; flex-direction: column;
+  height: 100%; min-height: 0; overflow: hidden;
+}
+body.chat-viewport .topbar { flex: none; }
+
+/* Content fills the remaining height and becomes a column so the chat root
+   can stretch; the page head and any banner stay pinned at the top. */
+body.chat-viewport .app-content {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow: hidden; max-width: none;
+  /* No bottom padding: the composer sits flush at the bottom edge so the
+     thread gets every remaining pixel for messages. */
+  padding: 14px 30px 0;
+}
+body.chat-viewport .page-head,
+body.chat-viewport .chat-req-banner { flex: none; }
+body.chat-viewport .chat-root {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+}
+
+/* The thread (user) or the two-pane grid (admin) stretches to fill the
+   chat root instead of using the fixed calc() height. The inner
+   .chat-messages is the ONLY scrollable element. */
+body.chat-viewport .chat-thread { flex: 1; min-height: 0; }
+body.chat-viewport .chat-layout {
+  flex: 1; min-height: 0; height: auto;
+}
+body.chat-viewport .conv-list { min-height: 0; }
+
+@media (max-width: 920px) {
+  /* Full-screen chat on mobile: hide the fixed bottom nav so the composer
+     owns the bottom edge (the sidebar is still reachable via the topbar
+     menu button, and the thread via its own back button). */
+  body.chat-viewport .mobile-nav { display: none; }
+  body.chat-viewport .app-content { padding: 12px 14px 0; }
+  body.chat-viewport .chat-composer {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+}

@@ -38,6 +38,41 @@ let lastBridgeAttempt = 0;
 
 const BRIDGE_RETRY_COOLDOWN_MS = 10000;
 
+// ── Session persistence ───────────────────────────────────────────────
+// The secret used to live only in this module's memory, so every multi-page
+// navigation re-ran the whole bridge — identity mirror PATCH, team membership
+// check, session mint — three to five server operations per page view for a
+// credential that had not changed. Restoring it per tab makes the bridge a
+// once-per-tab cost: a stale or foreign secret comes back as a 401, and api()
+// already re-bridges exactly once on that. sessionStorage (not localStorage)
+// keeps the secret scoped to the tab, matching how quickly it goes stale.
+const SESSION_KEY = 'ak_aw_session';
+let persistedUid = null;
+
+function loadPersistedSession() {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved && saved.secret) {
+      sessionSecret = saved.secret;
+      persistedUid = saved.uid || null;
+    }
+  } catch (_) { /* corrupt or unavailable — bridge on first use */ }
+}
+
+function persistSession() {
+  try {
+    if (sessionSecret) {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify({ secret: sessionSecret, uid: persistedUid }));
+    } else {
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+  } catch (_) { /* private mode — falls back to per-page bridging */ }
+}
+
+loadPersistedSession();
+
 export function hasAppwriteSession() {
   return !!sessionSecret;
 }
@@ -49,10 +84,19 @@ export function setAppwriteSession(secret) {
 
 export function clearAppwriteSession() {
   sessionSecret = null;
+  persistedUid = null;
+  persistSession();
 }
 
 /** Remember the Firebase user so writes can fetch an ID token on demand. */
 export function setBridgeUser(user) {
+  // A restored secret belongs to whichever uid minted it. A different account
+  // signing into this tab must never send the old identity's session.
+  if (user && persistedUid && persistedUid !== user.uid) {
+    sessionSecret = null;
+    persistedUid = null;
+    persistSession();
+  }
   bridgeUser = user || null;
   if (!bridgeUser) {
     clearAppwriteSession();
@@ -204,6 +248,8 @@ export async function ensureAppwriteSession(user, force) {
         return false;
       }
       sessionSecret = body.secret;
+      persistedUid = user.uid;
+      persistSession();
       return true;
     } catch (e) {
       console.warn('[appwrite] session bridge failed:', e && e.code, e && e.message);

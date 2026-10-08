@@ -300,11 +300,14 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   let typingClearTimer = null;
 
   // ── presence header ──
+  // maxPollMs 10s: presence is a single doc, and the other side's own beats
+  // and typing writes reset the interval to full speed while they are
+  // actually active — only a fully idle header settles to the slow cadence.
   let presenceUnsub = null;
   if (role === 'user') {
     presenceUnsub = subscribeWhileVisible(doc(db, 'config', 'availability'), (snap) => {
       presenceEl.innerHTML = presenceHtml(adminPresence(snap.data() || {}));
-    }, () => {});
+    }, () => {}, { maxPollMs: 10000 });
   } else {
     presenceUnsub = subscribeWhileVisible(doc(db, 'users', cid), (snap) => {
       const u = snap.data() || {};
@@ -313,7 +316,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       presenceEl.innerHTML = online
         ? '<span class="presence-dot online"></span>Active recently'
         : `<span class="presence-dot away"></span>Last seen ${last ? esc(fmtRelative(last)) : '—'}`;
-    }, () => {});
+    }, () => {}, { maxPollMs: 10000 });
   }
 
   // ── messages stream ──
@@ -345,7 +348,10 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       // identical HTML would be skipped and the error panel would stick forever.
       delete messagesEl.dataset.lastRender;
       messagesEl.innerHTML = '<div class="state-block error"><h3>Could not load messages</h3><p>Check your connection and try again.</p></div>';
-    });
+      // maxPollMs: a fully idle thread settles to 10s instead of the default
+      // 30s — sending a message (or receiving one, once it lands) resets the
+      // interval to full speed, so only genuine waiting slows down.
+    }, undefined, { maxPollMs: 10000 });
   }
   let msgUnsub = listen();
 
@@ -503,7 +509,10 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
         '<div class="msg-row typing-row" data-typing><span class="tdot"></span><span class="tdot"></span><span class="tdot"></span></div>');
     }
     if (convTypingFresh && nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
-  });
+    // maxPollMs 8s: typing freshness only spans 6s anyway, and the other
+    // side's own throttled typing writes reset this to full speed while
+    // they are actually typing — idle threads back off.
+  }, undefined, { maxPollMs: 8000 });
 
   function setTyping(on) {
     const field = role === 'user' ? 'userTyping' : 'adminTyping';

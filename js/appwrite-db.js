@@ -15,7 +15,8 @@
 //    server-assigned field we can target.
 //  * writeBatch() applies its operations in order rather than atomically;
 //    runTransaction() is optimistic instead (see below).
-//  * onSnapshot() polls (2.5s document / 4s query) and diffs locally,
+//  * onSnapshot() polls (2.5s document / 4s query, backing off to a cap
+//    while nothing changes and pausing in hidden tabs) and diffs locally,
 //    because an Appwrite realtime channel streams a whole table rather than
 //    one query's results.
 
@@ -547,8 +548,60 @@ function payloadRows(payload) {
 const PAGE_SIZE = 500;
 const MAX_PAGES = 100;
 
+// ── Read cache ────────────────────────────────────────────────────────
+// Every row Appwrite returns is billed against quota, so identical reads
+// issued close together share one round-trip: a poll racing an explicit
+// fetch, two listeners landing on the same query, a guard and the shell
+// asking for the same profile in the same tick. The window is deliberately
+// short — it absorbs bursts, it does not replace freshness — and any local
+// write to the table invalidates it outright (see commitGroup()).
+const READ_TTL_MS = 1200;
+const readCache = new Map();    // key -> { at, value }
+const readInflight = new Map(); // key -> Promise
+
+const cacheKeyDoc = (ref) => 'd:' + ref.table + '/' + ref.documentId;
+const cacheKeyQuery = (table, constraints) => 'q:' + table + ':' + JSON.stringify(constraints);
+
+function pruneCache() {
+  if (readCache.size <= 256) return;
+  const cutoff = Date.now() - READ_TTL_MS;
+  for (const [k, v] of readCache) if (v.at < cutoff) readCache.delete(k);
+  if (readCache.size > 512) readCache.clear();
+}
+
+function cachedRead(key, load) {
+  const hit = readCache.get(key);
+  if (hit && Date.now() - hit.at < READ_TTL_MS) return Promise.resolve(hit.value);
+  const pending = readInflight.get(key);
+  if (pending) return pending;
+  const p = (async () => {
+    try {
+      const value = await load();
+      readCache.set(key, { at: Date.now(), value });
+      pruneCache();
+      return value;
+    } finally {
+      readInflight.delete(key);
+    }
+  })();
+  readInflight.set(key, p);
+  return p;
+}
+
+function invalidateTable(table) {
+  const dPrefix = 'd:' + table + '/';
+  const qPrefix = 'q:' + table + ':';
+  for (const k of readCache.keys()) {
+    if (k.startsWith(dPrefix) || k.startsWith(qPrefix)) readCache.delete(k);
+  }
+}
+
 async function fetchDocs(target) {
   const q = toQuery(target);
+  return cachedRead(cacheKeyQuery(tableOf(q), q.constraints), () => fetchDocsRows(q));
+}
+
+async function fetchDocsRows(q) {
   const table = tableOf(q);
   const { objects, total } = queryObjects(q.constraints);
 
@@ -616,8 +669,15 @@ async function readRaw(ref) {
   }
 }
 
+// Cached single-row read for page loads and polls. Deliberately NOT used by
+// readForWrite()/runTransaction(): a write must resolve against the row as
+// it is right now, or optimistic concurrency silently weakens.
+function readDocCached(ref) {
+  return cachedRead(cacheKeyDoc(ref), () => readRaw(ref));
+}
+
 export async function getDoc(ref) {
-  const raw = await readRaw(ref);
+  const raw = await readDocCached(ref);
   return makeDocSnapshot(ref, raw);
 }
 
@@ -723,6 +783,14 @@ function beginGroup() {
 async function commitGroup(resolved) {
   if (!resolved.length) return;
   await executeWrite(resolved);
+  // The rows just changed: drop their cached reads so the next getDoc is
+  // fresh, and wake any listener on those tables so this tab sees its own
+  // write immediately instead of on the next poll tick.
+  const tables = new Set(resolved.map((o) => o.table));
+  for (const table of tables) {
+    invalidateTable(table);
+    wakeTable(table);
+  }
 }
 
 async function applyWrite(op) {
@@ -904,27 +972,81 @@ export async function getAggregateFromServer(target, aggregates) {
 // whole table, so a listener re-runs its own query on a timer and reports
 // only what actually changed — including the docChanges() shell.js uses to
 // decide which notifications deserve a popup.
+//
+// Polling is where quota goes to die if left at a fixed rate: an idle badge
+// listener billed ~900 query-reads an hour before. Three rules keep the cost
+// proportional to what is actually happening:
+//
+//   1. Backoff — every tick with no change grows the interval (×1.6) up to
+//      a cap; any change, local write or tab-visibility resume resets it to
+//      the base rate. Active pages poll at full speed; idle ones settle to
+//      a few reads per minute.
+//   2. Hidden tabs schedule nothing. A backgrounded tab is billed for reads
+//      nobody can see; returning re-attaches at full speed.
+//   3. wakeTable() — a write made through this adapter wakes listeners on
+//      that table immediately, so the slower idle cadence never makes THIS
+//      tab wait for its own change (the badge after mark-as-read, the chat
+//      thread after send).
 const DOC_POLL_MS = 2500;
 const QUERY_POLL_MS = 4000;
+const DOC_POLL_CAP = 12000;
+const QUERY_POLL_CAP = 30000;
+const POLL_GROWTH = 1.6;
+const WAKE_DEBOUNCE_MS = 250;
 
-export function onSnapshot(target, onNext, onError) {
+const liveListeners = new Set();
+
+/** A local write landed on `table` — re-poll everything watching it now. */
+function wakeTable(table) {
+  for (const l of liveListeners) {
+    if (l.table === table) l.wake();
+  }
+}
+
+export function onSnapshot(target, onNext, onError, opts) {
   const isDocument = !!(target && target.__ref);
+  const base = isDocument ? DOC_POLL_MS : QUERY_POLL_MS;
+  const cap = Math.max(base, (opts && opts.maxPollMs) || (isDocument ? DOC_POLL_CAP : QUERY_POLL_CAP));
   let stopped = false;
   let prevKey = null;
   let prevSnap = null;
   let inFlight = false;
   let timer = null;
+  let wakeTimer = null;
+  let delay = base;
+
+  const listener = {
+    table: isDocument ? target.table : tableOf(toQuery(target)),
+    wake() {
+      if (stopped) return;
+      delay = base;
+      if (inFlight) return; // finally → schedule() picks up the reset delay
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (wakeTimer) return;
+      wakeTimer = setTimeout(() => { wakeTimer = null; tick(); }, WAKE_DEBOUNCE_MS);
+    }
+  };
+
+  const schedule = () => {
+    if (stopped || document.hidden) return;
+    timer = setTimeout(tick, delay);
+  };
 
   const tick = async () => {
+    timer = null; // the timer that fired is consumed
     if (stopped || inFlight) return;
+    if (document.hidden) return; // onResume restarts it
     inFlight = true;
     try {
       if (isDocument) {
-        const raw = await readRaw(target);
+        const raw = await readDocCached(target);
         const key = JSON.stringify(raw || null);
         if (key !== prevKey) {
           prevKey = key;
+          delay = base;
           if (!stopped) onNext(makeDocSnapshot(target, raw));
+        } else {
+          delay = Math.min(cap, Math.round(delay * POLL_GROWTH));
         }
       } else {
         const q = toQuery(target);
@@ -935,21 +1057,36 @@ export function onSnapshot(target, onNext, onError) {
           const snap = makeQuerySnapshot(table, rows, prevSnap);
           prevKey = key;
           prevSnap = snap;
+          delay = base;
           if (!stopped) onNext(snap);
+        } else {
+          delay = Math.min(cap, Math.round(delay * POLL_GROWTH));
         }
       }
     } catch (e) {
       if (!stopped && onError) onError(e);
     } finally {
       inFlight = false;
-      if (!stopped) timer = setTimeout(tick, isDocument ? DOC_POLL_MS : QUERY_POLL_MS);
+      if (!stopped) schedule();
     }
   };
 
-  tick();
+  const onResume = () => {
+    if (stopped || document.hidden) return;
+    delay = base; // returning to the tab wants fresh state at full speed
+    if (!timer && !inFlight) tick();
+  };
+  document.addEventListener('visibilitychange', onResume);
+
+  liveListeners.add(listener);
+  if (document.hidden === false) tick();
+  else onResume(); // stays quiet until the tab is actually shown
 
   return () => {
     stopped = true;
+    liveListeners.delete(listener);
+    document.removeEventListener('visibilitychange', onResume);
     if (timer) clearTimeout(timer);
+    if (wakeTimer) clearTimeout(wakeTimer);
   };
 }

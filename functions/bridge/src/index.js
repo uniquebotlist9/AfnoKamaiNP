@@ -137,13 +137,18 @@ async function ensureAppwriteUser(id) {
     name: id.name || id.email || id.uid
   });
   if (r.status === 409) {
-    // Already mirrored — keep it in step with Firebase, best effort.
-    try {
-      await aw('PATCH', '/users/' + encodeURIComponent(id.uid), {
-        name: id.name || id.email || id.uid,
-        emailVerified: id.verified
-      });
-    } catch (_) { /* email/name drift is not fatal */ }
+    // Already mirrored. The PATCH keeps name/emailVerified in step with
+    // Firebase, but it costs a write on every bridge — for data the user
+    // changes a few times a day at most. One reconcile per 10 minutes is
+    // plenty; fresh sign-ins and creations still take the path above.
+    if (!throttled('profile:' + id.uid, 10 * 60 * 1000)) {
+      try {
+        await aw('PATCH', '/users/' + encodeURIComponent(id.uid), {
+          name: id.name || id.email || id.uid,
+          emailVerified: id.verified
+        });
+      } catch (_) { /* email/name drift is not fatal */ }
+    }
   } else if (r.status >= 300) {
     // A uid Appwrite refuses as a user id is a hard failure: without an
     // Appwrite identity there is no session and no row-level read access.
@@ -155,6 +160,13 @@ const confirmed = (m) => !!m && (m.confirm === true || m.confirmation === true |
 
 async function syncAdminTeam(id) {
   try {
+    // A non-admin only needs this membership GET to sweep one left behind by
+    // a demotion — and the policy already distrusts the team (the token
+    // claim is what authorises writes). Checking once per 15 minutes bounds
+    // the cleanup delay instead of paying a membership read on every page
+    // navigation. Admins keep the exact-once-per-bridge behaviour: their
+    // row grants depend on the membership being current.
+    if (!id.admin && throttled('team:' + id.uid, 15 * 60 * 1000)) return;
     const listed = await aw('GET', '/teams/' + ADMIN_TEAM + '/memberships');
     const mine = ((listed.json && listed.json.memberships) || []).filter((m) => m.userId === id.uid);
 
@@ -205,8 +217,57 @@ async function mintSession(uid) {
   throw new Error((r.json && r.json.message) || 'could not mint a session (' + r.status + ')');
 }
 
+// ── Rate limiting ─────────────────────────────────────────────────────
+// The proxy is the browser's ONLY write path, so a runaway loop or a
+// scripted flood would otherwise burn the project's daily write budget —
+// and every proxied write also costs policy readRows against quota. A
+// per-uid token bucket keeps any human session comfortably under the
+// limit while capping what a broken client can spend in a minute. It is
+// in-memory and per-instance by design: Functions instances are ephemeral,
+// and a limit that resets on cold start is still a limit. Reads never pass
+// through here — read thrift is enforced client-side (read cache + listener
+// backoff in js/appwrite-db.js).
+const buckets = new Map();
+const throttleMarks = new Map();
+
+function takeToken(key, burst, perSecond) {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b) {
+    if (buckets.size > 4000) buckets.clear(); // instance-local growth guard
+    b = { tokens: burst, at: now };
+    buckets.set(key, b);
+  }
+  b.tokens = Math.min(burst, b.tokens + ((now - b.at) / 1000) * perSecond);
+  b.at = now;
+  if (b.tokens < 1) return false;
+  b.tokens -= 1;
+  return true;
+}
+
+/** True when `key` was touched inside `windowMs` (and marks it otherwise). */
+function throttled(key, windowMs) {
+  const now = Date.now();
+  const last = throttleMarks.get(key) || 0;
+  if (now - last < windowMs) return true;
+  if (throttleMarks.size > 4000) throttleMarks.clear();
+  throttleMarks.set(key, now);
+  return false;
+}
+
+function rateLimited() {
+  const e = new Error('You are sending changes too quickly. Please wait a moment and try again.');
+  e.status = 429;
+  e.code = 'resource-exhausted';
+  return e;
+}
+
 async function doBridge(payload) {
   const id = await verifyIdToken(payload.idToken);
+  // Bridging costs several server operations (identity mirror, team check,
+  // session mint); clients now keep the secret per tab, so this should be
+  // rare — anything hammering it is a loop, not a user.
+  if (!takeToken('b:' + id.uid, 10, 0.5)) throw rateLimited();
   await ensureAppwriteUser(id);
   await syncAdminTeam(id);
   const secret = await mintSession(id.uid);
@@ -274,6 +335,11 @@ function shapeError(message) {
 }
 
 async function doWrite(payload, id) {
+  // Checked before any parsing or policy work: a flood should cost nothing.
+  // Admins get a wider bucket because bulk actions legitimately loop client
+  // side (approve/reindex sweeps); a user's worst case is a signup batch
+  // plus chat pacing, far under 2 writes/second sustained.
+  if (!takeToken('w:' + id.uid, id.admin ? 100 : 30, id.admin ? 5 : 2)) throw rateLimited();
   let ops = null;
   if (Array.isArray(payload.ops) && payload.ops.length) {
     ops = payload.ops;

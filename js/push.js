@@ -503,9 +503,18 @@ export async function savePrefs(prefs) {
 export async function autoSyncIfGranted() {
   if (!pushSupported()) return;
   if (Notification.permission === 'default') return; // never prompt here
-  if (Notification.permission === 'denied') {
-    await retireLocalRecord('permission_denied').catch(() => {});
-    return;
-  }
-  await syncSubscription({ prompt: false }).catch(() => {});
+  // Reconciling reads the subscription row (and sometimes writes one).
+  // Endpoints do not change from page to page, so a short TTL turns the
+  // per-navigation sync into a per-10-minutes one; the explicit paths —
+  // the opt-in button and notification settings — still sync on demand.
+  const last = Number(localStorage.getItem('ak_push_synced_at') || 0);
+  if (Date.now() - last < 10 * 60 * 1000) return;
+  try {
+    if (Notification.permission === 'denied') {
+      await retireLocalRecord('permission_denied');
+    } else {
+      await syncSubscription({ prompt: false });
+    }
+    localStorage.setItem('ak_push_synced_at', String(Date.now()));
+  } catch (_) { /* retried on a later page load */ }
 }

@@ -331,6 +331,9 @@ function setupNotifications(layout, uid) {
   // badge nobody can see. Hidden → detached; returning to the tab
   // re-attaches and the snapshot below repaints the badge and surfaces any
   // priority items that arrived while the user was away.
+  // maxPollMs: the badge tolerates up to 20s of idle lag (the listener still
+  // resets to full speed whenever anything changes or this tab writes), which
+  // takes the steady-state cost from ~900 query-reads/hour down to ~180.
   subscribeWhileVisible(qUnread, (snap) => {
     const n = snap.size;
     unreadCount = n;
@@ -382,7 +385,7 @@ function setupNotifications(layout, uid) {
       });
     }
     firstSnapshot = false;
-  }, () => { /* badge is best-effort */ });
+  }, () => { /* badge is best-effort */ }, { maxPollMs: 20000 });
 
   const bell = layout.querySelector('#notif-bell');
   const wrap = layout.querySelector('#notif-wrap');
@@ -400,13 +403,24 @@ function setupNotifications(layout, uid) {
 }
 
 function startHeartbeat(uid) {
-  const beat = () => updateDoc(doc(db, 'users', uid), { lastActiveAt: serverTimestamp() }).catch(() => {});
-  beat();
   // Presence only needs 5-minute granularity (chat.js treats a user as online
-  // when lastActiveAt is under 5 min old), so 4 min leaves a 60s safety margin
-  // while cutting heartbeat writes from 1,440 to 360 per open day.
-  setInterval(beat, 4 * 60 * 1000);
-  window.addEventListener('beforeunload', () => { try { beat(); } catch (_) {} });
+  // when lastActiveAt is under 5 min old), so 4 min leaves a 60s safety margin.
+  // The beat is also visibility- and staleness-gated: a backgrounded tab
+  // writes NOTHING, and returning to a stale tab writes exactly once. The
+  // 60s timer below is a local clock check — it only reaches the network
+  // when the tab is visible and the last beat is older than 4 minutes.
+  let lastBeat = 0;
+  const beat = (force) => {
+    if (!force && document.hidden) return;
+    const now = Date.now();
+    if (!force && now - lastBeat < 4 * 60 * 1000) return;
+    lastBeat = now;
+    updateDoc(doc(db, 'users', uid), { lastActiveAt: serverTimestamp() }).catch(() => {});
+  };
+  beat(true);
+  setInterval(beat, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) beat(); });
+  window.addEventListener('beforeunload', () => { try { beat(true); } catch (_) {} });
 }
 
 // Deliberately NOT visibility-gated: this is the one check that must
@@ -419,10 +433,16 @@ function startHeartbeat(uid) {
 // (If the table/row is provisioned in Appwrite, the read will return the
 // current state immediately.)
 async function watchMaintenance(profile) {
+  // Admins are exempt from the redirect, so the read only buys a
+  // non-admin a duplicate of what the last page load already fetched.
+  if (profile && profile.role === 'admin') return;
   try {
+    const last = Number(localStorage.getItem('ak_maint_checked_at') || 0);
+    if (Date.now() - last < 5 * 60 * 1000) return;
+    localStorage.setItem('ak_maint_checked_at', String(Date.now()));
     const snap = await getDoc(doc(db, 'config', 'maintenance'));
     const m = snap.data();
-    if (m && m.enabled && profile.role !== 'admin') location.replace('maintenance.html');
+    if (m && m.enabled) location.replace('maintenance.html');
   } catch (_) {
     // Config row missing — maintenance mode is effectively off.
     // No-op: the admin can enable it later and users will see it on refresh.

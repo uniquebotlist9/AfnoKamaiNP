@@ -29,12 +29,14 @@ document.addEventListener('visibilitychange', () => {
  * caller (e.g. the chat thread's "load earlier" re-query) can never be
  * revived behind the caller's back.
  */
-export function subscribeWhileVisible(target, onNext, onError) {
+export function subscribeWhileVisible(target, onNext, onError, opts) {
   let unsub = null;
   const gate = {
     resume() {
       if (unsub) return;
-      unsub = onError ? onSnapshot(target, onNext, onError) : onSnapshot(target, onNext);
+      unsub = onError
+        ? onSnapshot(target, onNext, onError, opts)
+        : onSnapshot(target, onNext, undefined, opts);
     },
     pause() {
       if (!unsub) return;

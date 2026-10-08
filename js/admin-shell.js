@@ -190,15 +190,21 @@ export async function mountAdminShell(pageId) {
 
   // ── presence heartbeat: admins stay "active" while panel is open ──
   const availRef = doc(db, 'config', 'availability');
-  const beat = () => setDoc(availRef, {
-    state: 'active',
-    updatedAt: serverTimestamp()
-  }, { merge: true }).catch(() => {});
-  beat();
-  // 4 min instead of 1 min: chat.js only treats the admin as "currently
-  // active" within a 5-minute window, so this keeps a 60s safety margin and
-  // cuts heartbeat writes 4× for tabs left open all day.
-  const beatTimer = setInterval(beat, 4 * 60 * 1000);
+  // Same gating as the user shell's heartbeat: a hidden admin panel writes
+  // nothing at all, a visible one writes once per 4 min (chat.js only counts
+  // an admin "currently active" inside a 5-minute window — 60s margin). The
+  // 60s timer is a local staleness check, not a request.
+  let lastBeat = 0;
+  const beat = (force) => {
+    if (!force && document.hidden) return;
+    const now = Date.now();
+    if (!force && now - lastBeat < 4 * 60 * 1000) return;
+    lastBeat = now;
+    setDoc(availRef, { state: 'active', updatedAt: serverTimestamp() }, { merge: true }).catch(() => {});
+  };
+  beat(true);
+  const beatTimer = setInterval(beat, 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) beat(); });
   window.addEventListener('pagehide', () => clearInterval(beatTimer));
 
   // mark state away when leaving

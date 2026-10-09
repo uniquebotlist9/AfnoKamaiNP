@@ -9,9 +9,9 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Inspect latest failure detail
+      - name: End-to-end push test
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
@@ -20,6 +20,7 @@ jobs:
           node <<'NODE'
           const EP = 'https://sgp.cloud.appwrite.io/v1';
           const DB = process.env.APPWRITE_DATABASE_ID;
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
           async function aw(method, path, body) {
             const res = await fetch(EP + path, {
@@ -37,36 +38,93 @@ jobs:
             return { status: res.status, json, text };
           }
 
+          const base = (t) => '/tablesdb/' + DB + '/tables/' + t;
+          const ROW_ID = 'fixedtest0726';
+
           (async () => {
-            // 1. Full detail of the post-restore execution.
-            const ex = await aw('GET', '/functions/push-sender/executions/6ac8968439d43b977381');
-            const d = ex.json || {};
-            console.log('EXEC detail status=' + ex.status + ' fnStatus=' + d.status);
-            for (const field of ['logs', 'stdout', 'stderr', 'errors']) {
-              const v = String(d[field] || '');
-              console.log('--- ' + field + ' (' + v.length + ' chars) ---');
-              console.log(v.slice(0, 6000));
+            // 1. Choose a target: active subscription created today (bound to
+            //    the current keypair) and push prefs not switched off.
+            const prefs = await aw('GET', base('/notificationPrefs/rows?limit=10'));
+            const prefsById = {};
+            for (const r of (prefs.json && prefs.json.rows) || []) prefsById[r.$id] = r;
+            console.log('prefs rows:', (prefs.json && prefs.json.total), Object.keys(prefsById).join(',') || '<none>');
+
+            const subs = await aw('GET', base('/pushSubscriptions/rows?limit=20'));
+            const srows = (subs.json && subs.json.rows) || [];
+            for (const s of srows) {
+              console.log('SUB ' + s.$id + ' user=' + s.userId + ' created=' + s.$createdAt + ' active=' + s.isActive);
+            }
+            const today = (r) => String(r.$createdAt).slice(0, 10) === '2026-10-09';
+            const good = srows.filter((s) => s.isActive && today(s) &&
+              (!prefsById[s.userId] || prefsById[s.userId].push !== false));
+            if (!good.length) { console.log('NO suitable target — aborting'); process.exit(1); }
+            const target = good[0].userId;
+            console.log('target user:', target);
+
+            // 2. Create the notification (server-side write, like the bridge does).
+            const created = await aw('POST', base('/notifications/rows'), {
+              rowId: ROW_ID,
+              data: {
+                userId: target,
+                audience: 'user',
+                type: 'system',
+                category: 'system',
+                title: 'Notifications fixed',
+                body: 'Push delivery is working again - VAPID keys resynced.',
+                link: '/notifications',
+                read: false,
+                pushState: 'queued',
+                searchText: 'notifications fixed',
+                createdAt: new Date().toISOString()
+              },
+              permissions: [
+                'read("user:' + target + '")',
+                'update("user:' + target + '")',
+                'delete("user:' + target + '")'
+              ]
+            });
+            console.log('create row -> ' + created.status + ' ' + (created.text || '').slice(0, 200));
+            if (created.status >= 400) { console.log('DONE'); process.exit(1); }
+
+            const t0 = new Date().toISOString();
+
+            // 3. Poll for the delivery log row for this notification.
+            let result = null;
+            for (let i = 0; i < 33 && !result; i++) {
+              await sleep(10000);
+              const l = await aw('GET', base('/notificationLog/rows?limit=60'));
+              const hit = ((l.json && l.json.rows) || []).find((r) => r.notificationId === ROW_ID);
+              if (hit) { result = hit; break; }
+              // Backstop: if the event trigger did not fire, kick the sender.
+              if (i === 5) {
+                const trig = await aw('POST', '/functions/push-sender/executions', {});
+                console.log('manual trigger after 60s -> ' + trig.status);
+              }
             }
 
-            // 2. Newest notificationLog rows (default order is ascending).
-            const l = await aw('GET', '/tablesdb/' + DB + '/tables/notificationLog/rows?limit=60');
-            const lrows = (l.json && l.json.rows) || [];
-            console.log('NOTIFICATIONLOG total=' + (l.json && l.json.total) + ' showing last 15:');
-            for (const r of lrows.slice(-15)) {
-              console.log('  L ' + r.$createdAt + ' status=' + r.status + ' error=' + (r.error || '-') +
-                ' notif=' + String(r.notificationId || '').slice(0, 28) + ' sub=' + String(r.subscriptionId || '').slice(0, 24));
+            if (!result) {
+              console.log('NO LOG ROW after ~5.5 min');
+            } else {
+              console.log('LOG ROW: status=' + result.status + ' error=' + (result.error || '-') +
+                ' sub=' + result.subscriptionId + ' at=' + (result.sentAt || result.$createdAt));
             }
 
-            // 3. Newest notifications — pushState distribution at the tail.
-            const n = await aw('GET', '/tablesdb/' + DB + '/tables/notifications/rows?limit=60');
-            const nrows = (n.json && n.json.rows) || [];
-            console.log('NOTIFICATIONS total=' + (n.json && n.json.total) + ' last 15:');
-            for (const r of nrows.slice(-15)) {
-              console.log('  N ' + r.$createdAt + ' type=' + r.type + ' pushState=' + r.pushState +
-                ' attempts=' + (r.pushAttempts === undefined ? '-' : r.pushAttempts) +
-                ' lastErr=' + (r.pushLastError === undefined ? '-' : String(r.pushLastError).slice(0, 60)));
+            // 4. The notification's own state + the fn's latest log.
+            const n = await aw('GET', base('/notifications/rows?limit=80'));
+            const mine = ((n.json && n.json.rows) || []).find((r) => r.$id === ROW_ID);
+            console.log('notification pushState=' + (mine ? mine.pushState : '<not found>') +
+              ' attempts=' + (mine && mine.pushAttempts) + ' sentCount=' + (mine && mine.pushSentCount));
+
+            const ex = await aw('GET', '/functions/push-sender/executions?limit=4&query=' +
+              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
+            for (const e of ((ex.json && ex.json.executions) || []).filter((x) => x.$createdAt >= t0)) {
+              const d = await aw('GET', '/functions/push-sender/executions/' + e.$id);
+              console.log('EXEC ' + e.$createdAt + ' trigger=' + e.trigger + ' :: ' +
+                String((d.json && d.json.logs) || '').slice(0, 1200));
             }
 
+            const ok = result && result.status === 'sent';
+            console.log(ok ? 'E2E VERIFIED: push accepted by provider' : 'E2E NOT VERIFIED');
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

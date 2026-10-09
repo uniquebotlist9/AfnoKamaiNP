@@ -63,6 +63,7 @@ jobs:
             // 2. Upload a fresh deployment (forces a cold container on activate).
             const fd = new FormData();
             fd.append('code', new Blob([fs.readFileSync('code.zip')], { type: 'application/zip' }), 'code.zip');
+            fd.append('activate', 'true');
             if (entry) fd.append('entrypoint', entry);
             const dep = await aw('POST', '/functions/' + FN + '/deployments', fd);
             console.log('create deployment -> ' + dep.status + ' ' + (dep.text || '').slice(0, 400));

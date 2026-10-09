@@ -20,10 +20,9 @@ jobs:
           APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
         run: |
           cd functions/push-fn
-          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          tar -czf ../../code.tar.gz package.json src
           cd ../..
-          zip -qr code.zip functions/push-fn -x "*/node_modules/*"
-          echo "zip built: $(du -h code.zip | cut -f1)"
+          echo "archive built: $(du -h code.tar.gz | cut -f1)"
           node <<'NODE'
           const fs = require('fs');
           const EP = 'https://sgp.cloud.appwrite.io/v1';
@@ -62,7 +61,7 @@ jobs:
 
             // 2. Upload a fresh deployment (forces a cold container on activate).
             const fd = new FormData();
-            fd.append('code', new Blob([fs.readFileSync('code.zip')], { type: 'application/zip' }), 'code.zip');
+            fd.append('code', new Blob([fs.readFileSync('code.tar.gz')], { type: 'application/gzip' }), 'code.tar.gz');
             fd.append('activate', 'true');
             if (entry) fd.append('entrypoint', entry);
             const dep = await aw('POST', '/functions/' + FN + '/deployments', fd);

@@ -1,9 +1,0 @@
-{
-  "name": "afnokamai-push-sender",
-  "version": "1.0.0",
-  "private": true,
-  "description": "Drains the AfnoKamai notification queue to Web Push from an Appwrite Function.",
-  "dependencies": {
-    "web-push": "^3.6.7"
-  }
-}

@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Remove test delivery-log rows (json query)
+      - name: Delete test log rows by computed ids
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
@@ -20,6 +20,21 @@ jobs:
           node <<'NODE'
           const EP = 'https://sgp.cloud.appwrite.io/v1';
           const DB = process.env.APPWRITE_DATABASE_ID;
+
+          // Same compaction as scripts/appwrite-admin.cjs rowIdOf().
+          const ROWID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/;
+          function compactHash(id) {
+            let h1 = 0x811c9dc5, h2 = 0x01000193, h3 = 0x9e3779b9;
+            for (let i = 0; i < id.length; i++) {
+              const c = id.charCodeAt(i);
+              h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+              h2 = Math.imul(h2 + c, 2654435761) >>> 0;
+              h3 = Math.imul(h3 ^ (c + i), 2246822519) >>> 0;
+            }
+            return [h1, h2, h3].map((h) => h.toString(16).padStart(8, '0')).join('');
+          }
+          const rowIdOf = (logical) =>
+            ROWID_RE.test(String(logical || '')) ? String(logical) : 'k' + compactHash(String(logical));
 
           async function aw(method, path, body) {
             const res = await fetch(EP + path, {
@@ -38,51 +53,23 @@ jobs:
           }
 
           const base = (t) => '/tablesdb/' + DB + '/tables/' + t;
-          const TEST_IDS = ['fixedtest0726', 'fixedtest1026'];
 
           (async () => {
-            // Try query-parameter shapes until one returns newest-first rows.
-            const shapes = [
-              { name: 'singular JSON $createdAt',
-                q: '&query=' + encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: '$createdAt', values: [] })) },
-              { name: 'singular JSON createdAt',
-                q: '&query=' + encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })) },
-              { name: 'array JSON queries',
-                q: '&queries=' + encodeURIComponent(JSON.stringify(['orderDesc("$createdAt")'])) }
+            const logicalIds = [
+              'fixedtest0726_k88c2f5c06ccc9c48bee8e83e',
+              'fixedtest0726_k24df32ed25138dd53915866d',
+              'fixedtest1026_kba2a747bd48adaaf7ea242dd'
             ];
-
-            let rows = [];
-            for (const s of shapes) {
-              const r = await aw('GET', base('/notificationLog/rows?limit=25' + s.q));
-              const got = (r.json && r.json.rows) || [];
-              console.log('shape "' + s.name + '" -> status=' + r.status + ' rows=' + got.length +
-                ' newest=' + (got[0] && got[0].$createdAt));
-              if (got.length && String(got[0].$createdAt || '').startsWith('2026-10-09T07')) {
-                rows = got;
-                console.log('using: ' + s.name);
-                break;
-              }
+            for (const logical of logicalIds) {
+              const rid = rowIdOf(logical);
+              const d = await aw('DELETE', base('/notificationLog/rows/' + rid));
+              console.log('delete ' + rid + ' (logical ' + logical + ') -> ' + d.status);
             }
 
-            if (!rows.length) {
-              console.log('no shape returned newest-first rows — aborting');
-              console.log('DONE');
-              process.exit(0);
-            }
-
-            let deleted = 0;
-            for (const row of rows) {
-              if (TEST_IDS.some((t) => String(row.notificationId || '').startsWith(t))) {
-                const d = await aw('DELETE', base('/notificationLog/rows/' + row.$id));
-                console.log('delete log ' + row.$id + ' notif=' + row.notificationId +
-                  ' status=' + row.status + ' -> ' + d.status);
-                if (d.status === 204) deleted++;
-              }
-            }
-            console.log('deleted=' + deleted);
-
-            const l2 = await aw('GET', base('/notificationLog/rows?limit=5'));
-            console.log('final: notificationLog total=' + (l2.json && l2.json.total));
+            const l = await aw('GET', base('/notificationLog/rows?limit=5'));
+            const n = await aw('GET', base('/notifications/rows?limit=5'));
+            console.log('final: notificationLog total=' + (l.json && l.json.total) +
+              ' notifications total=' + (n.json && n.json.total));
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

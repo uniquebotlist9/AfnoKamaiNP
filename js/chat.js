@@ -143,7 +143,7 @@ export async function mountChat({ root, role, selfUid, selfName }) {
     if (token !== openToken) return; // a newer conversation was opened meanwhile
     const conv = convSnap.data() || {};
     activeCleanup = buildThread(threadCard, { role: 'admin', cid, selfUid, selfName, conv, withBack: true });
-    history.replaceState(null, '', `chats.html?uid=${cid}`);
+    history.replaceState(null, '', `chats?uid=${cid}`);
   }
 
   threadCard.addEventListener('click', (e) => {
@@ -212,7 +212,7 @@ async function notifyUserOfAdminMessage(cid, { type, text }) {
       type: 'admin_message',
       title: 'Message from admin',
       body: body || 'New message',
-      link: 'chat.html',
+      link: 'chat',
       tone: 'gold',
       icon: 'message',
       priority: 'high',
@@ -228,7 +228,7 @@ async function notifyUserOfAdminMessage(cid, { type, text }) {
         type: 'admin_message',
         title: 'New message from admin',
         body: 'You have a new message from admin. Open the chat to read it.',
-        link: 'chat.html',
+        link: 'chat',
         tone: 'gold',
         icon: 'message',
         priority: 'high',

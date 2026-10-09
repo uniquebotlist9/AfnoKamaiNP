@@ -3,7 +3,7 @@ import { db } from '../../firebase.js';
 import {
   collection, query, where, orderBy, limit, getDocs, doc, getDoc, startAfter
 } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR, fmtDateTime, fmtRelative, initials } from '../../utils.js';
 import { WITHDRAWAL_STATUS, ASSIGNMENT_STATUS } from '../../utils.js';
 import { icon } from '../../icons.js';
@@ -11,6 +11,7 @@ import { emptyState, skeletonRows, badge, modal, confirmDialog, btnBusy, toast, 
 import { addAdminNote } from '../../admin-actions.js';
 import { banUser, applyPenalty, adjustBalance, computeRiskFlags } from '../../admin-actions.js';
 import { penaltyModal } from './penalty-modal.js';
+import { deleteUserAccount } from './delete-user.js?v=1';
 
 let { content } = await mountAdminShell('users');
 document.getElementById('page-skeleton')?.remove();
@@ -66,6 +67,10 @@ async function load(reset, run) {
     if (reset) {
       if (!users.length) {
         tableEl.innerHTML = emptyState({ icon: 'users', title: 'No users found', message: filterText ? 'No users match your search on this page — try different terms or load more.' : 'No registered users yet.' });
+        // Update the counter here: the normal path below never runs for an
+        // empty result, and a stale "N shown" next to "No users found" is
+        // exactly the kind of contradiction that erodes trust in the page.
+        content.querySelector('#u-count').textContent = '0 shown';
         return null;
       }
       tableEl.innerHTML = `<div class="table-wrap"><table class="table">
@@ -95,7 +100,10 @@ async function load(reset, run) {
     content.querySelector('#u-count').textContent = `${total} shown`;
     return cursor;
   } catch (_) {
-    if (reset) tableEl.innerHTML = emptyState({ icon: 'alert', title: 'Could not load users', message: 'Please refresh the page.' });
+    if (reset) {
+      tableEl.innerHTML = emptyState({ icon: 'alert', title: 'Could not load users', message: 'Please refresh the page.' });
+      content.querySelector('#u-count').textContent = '— shown';
+    }
     return null;
   }
 }
@@ -184,12 +192,13 @@ async function openUser(uid) {
       </div>
       <div class="drawer-body" id="drawer-body"></div>
       <div style="display:flex; gap:10px; padding:14px 20px; background:var(--surface); border-top:1px solid var(--line); flex-wrap:wrap">
-        <a class="btn primary btn-sm" href="/admin/chats.html?uid=${esc(uid)}">${icon('message')} Chat</a>
+        <a class="btn primary btn-sm" href="/admin/chats?uid=${esc(uid)}">${icon('message')} Chat</a>
         <button class="btn ghost btn-sm" id="act-adjust">${icon('edit')} Adjustment</button>
         <button class="btn ghost btn-sm" id="act-penalty">${icon('alert')} Penalty</button>
         ${u.status === 'banned'
           ? `<button class="btn subtle btn-sm" id="act-unban">${icon('check')} Unban</button>`
           : `<button class="btn outline-danger btn-sm" id="act-ban">${icon('ban')} Ban user</button>`}
+        ${u.role === 'admin' ? '' : `<button class="btn outline-danger btn-sm" id="act-delete" style="margin-left:auto">${icon('trash')} Delete</button>`}
       </div>`;
 
     drawer.querySelector('#drawer-close').addEventListener('click', close);
@@ -348,6 +357,36 @@ async function openUser(uid) {
         loadAll(true);
       } catch (err) { toast(err.message, { type: 'error' }); }
     });
+
+    // ── permanent deletion ──
+    // Separate from "Ban": ban is reversible and keeps the records, this one
+    // erases the sign-in (their Gmail), the profile, wallet, tasks, chat and
+    // every row they own, server-side, in one call.
+    const delBtn = drawer.querySelector('#act-delete');
+    if (delBtn) delBtn.addEventListener('click', async () => {
+      const parked = (w.availablePaisa || 0) + (w.holdPaisa || 0);
+      const money = parked > 0
+        ? ` ${fmtNPR(parked)} still sits in this wallet and will be written off.`
+        : '';
+      const ok = await confirmDialog({
+        title: `Delete ${u.fullName || u.email}?`,
+        message: `Sign-in (${u.email}), profile, wallet, task history, withdrawals, chat and notifications are erased permanently. This cannot be undone.${money}`,
+        confirmText: 'Delete forever',
+        danger: true,
+        requireText: 'DELETE'
+      });
+      if (!ok) return;
+      btnBusy(delBtn, true, 'Deleting…');
+      try {
+        const res = await deleteUserAccount({ uid });
+        close();
+        toast(`Account deleted — ${res.totalRows || 0} record(s) removed.`, { type: 'success' });
+        loadAll(true);
+      } catch (err) {
+        btnBusy(delBtn, false);
+        toast((err && err.message) || 'Could not delete the account.', { type: 'error' });
+      }
+    });
   } catch (_) {
     drawer.innerHTML = '<div class="drawer-body">' + emptyState({ icon: 'alert', title: 'Could not load user', message: 'Please try again.' }) + '</div>';
   }
@@ -398,6 +437,6 @@ function adjustModal(u, closeDrawer) {
   });
 }
 
-// deep link: users.html?uid=…
+// deep link: users?uid=…
 const target = new URLSearchParams(location.search).get('uid');
 if (target) setTimeout(() => openUser(target), 400);

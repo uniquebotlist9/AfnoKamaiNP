@@ -1,18 +1,20 @@
-/* AfnoKamai service worker — cache-first for static assets,
-   network-first for pages, plus real Web Push delivery.
+/* AfnoKamai service worker — stale-while-revalidate for pages, JS and
+   static assets (cached copy answers instantly, a background no-cache
+   fetch keeps it honest), plus real Web Push delivery.
 
    The push handlers below are what make notifications arrive while the
    site is closed. They only ever *display*; the subscription document is
    owned by the page (js/push.js) because Firestore auth does not exist
    inside a service worker. */
-const CACHE = 'afnokamai-v11';
+const CACHE = 'afnokamai-v14';
 const ASSETS = [
   'assets/icon.svg',
-  'css/global.css?v=5',
+  'css/global.css?v=6',
   'css/auth.css?v=2',
   'css/app.css?v=7',
   'css/chat.css?v=3',
-  'css/admin.css'
+  'css/notifications.css?v=1',
+  'css/admin.css?v=1'
 ];
 
 self.addEventListener('install', (e) => {
@@ -31,53 +33,85 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
 
-  // Never cache an error response — a cached 500/404 would survive the
-  // outage and keep serving bad HTML/JS after the server recovered.
-  const putIfOk = (cache, res) => { if (res && res.ok && res.type === 'basic') cache.put(e.request, res.clone()); };
-
-  // Pages: network first, fall back to cache.
+  // Pages: stale-while-revalidate. The cached copy answers instantly, so
+  // switching sections is a direct swap — no spinner flash on every nav — while
+  // a background `no-cache` fetch revalidates, so the *next* switch always
+  // has the freshest HTML (at most one navigation behind). A non-OK
+  // revalidation drops the cached copy so a page we removed cannot linger.
   if (e.request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname === '/') {
-    e.respondWith(
-      fetch(e.request)
-        .then((res) => {
+    const net = fetch(e.request, { cache: 'no-cache' })
+      .then((res) => {
+        if (res && res.ok && res.type === 'basic') {
           const clone = res.clone();
-          caches.open(CACHE).then((c) => putIfOk(c, clone));
-          return res;
-        })
-        .catch(() => caches.match(e.request).then((r) => r || caches.match('/index.html')))
+          caches.open(CACHE).then((c) => c.put(e.request, clone)).catch(() => {});
+        } else if (res && !res.ok) {
+          caches.open(CACHE).then((c) => c.delete(e.request)).catch(() => {});
+        }
+        return res; // hand the caller the Response itself, not the put() promise
+      })
+      .catch(() => null);
+    e.respondWith(
+      caches.match(e.request).then(
+        (cached) =>
+          cached ||
+          net.then((res) => res || caches.match('/'))
+      ).then((r) => r || Promise.reject(new TypeError('offline and not cached')))
     );
     return;
   }
 
-  // JS: network first — stale code on a money platform is worse than a
-  // slow load. `cache: 'no-cache'` forces revalidation: without it the
-  // browser HTTP cache (js files ship `public, max-age=3600`) answers the
-  // fetch from disk for up to an hour, which defeats network-first and
-  // keeps serving pre-deploy code after a release. Falls back to cache
-  // only when offline.
+  // JS: stale-while-revalidate. The cached copy answers instantly, so repeat
+  // navigations never wait on the network (the old network-first path forced
+  // ~19 conditional round trips before a page could boot), while a background
+  // `no-cache` fetch still checks the server every time — so a release lands
+  // on the very next navigation instead of the hour the HTTP cache would
+  // otherwise hold it. Offline: the cache copy is the only answer.
   if (url.pathname.endsWith('.js')) {
-    e.respondWith(
-      fetch(e.request, { cache: 'no-cache' })
-        .then((res) => {
+    const net = fetch(e.request, { cache: 'no-cache' })
+      .then((res) => {
+        if (res && res.ok && res.type === 'basic') {
           const clone = res.clone();
-          caches.open(CACHE).then((c) => putIfOk(c, clone));
-          return res;
-        })
-        .catch(() => caches.match(e.request))
+          caches.open(CACHE).then((c) => c.put(e.request, clone)).catch(() => {});
+        }
+        return res; // hand the caller the Response itself, not the put() promise
+      })
+      .catch(() => null);
+    e.respondWith(
+      caches.match(e.request).then(
+        (cached) =>
+          cached ||
+          net.then((res) => {
+            if (res) return res;
+            return Promise.reject(new TypeError('offline and not cached'));
+          })
+      )
     );
     return;
   }
 
-  // Other static assets (css/images): cache first.
+  // Other static assets (css/images): stale-while-revalidate, same policy
+  // as pages and JS. Pure cache-first pinned an entry forever — an edit
+  // shipped without a ?v= bump (or an old tab carrying the previous query)
+  // could never reach that browser again, which is how stale bytes of
+  // global.css kept tiling the admin panel's select chevron. Answer from
+  // cache now, revalidate in the background, drop the entry if the asset
+  // was removed server-side.
+  const net = fetch(e.request, { cache: 'no-cache' })
+    .then((res) => {
+      if (res && res.ok && res.type === 'basic') {
+        const clone = res.clone();
+        caches.open(CACHE).then((c) => c.put(e.request, clone)).catch(() => {});
+      } else if (res && !res.ok) {
+        caches.open(CACHE).then((c) => c.delete(e.request)).catch(() => {});
+      }
+      return res;
+    })
+    .catch(() => null);
   e.respondWith(
     caches.match(e.request).then(
       (cached) =>
         cached ||
-        fetch(e.request).then((res) => {
-          const clone = res.clone();
-          caches.open(CACHE).then((c) => putIfOk(c, clone));
-          return res;
-        })
+        net.then((res) => res || Promise.reject(new TypeError('offline and not cached')))
     )
   );
 });
@@ -140,7 +174,7 @@ self.addEventListener('push', (event) => {
     // into the notification shade after a few seconds.
     requireInteraction: payload.priority === 'urgent',
     data: {
-      url: typeof payload.url === 'string' ? payload.url : '/notifications.html',
+      url: typeof payload.url === 'string' ? payload.url : '/notifications',
       notificationId: typeof payload.notificationId === 'string' ? payload.notificationId : '',
       category: typeof payload.category === 'string' ? payload.category : 'system'
     }
@@ -152,7 +186,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  const rawUrl = (event.notification.data && event.notification.data.url) || '/notifications.html';
+  const rawUrl = (event.notification.data && event.notification.data.url) || '/notifications';
 
   // The URL arrives from a push payload. Never navigate off-origin: a
   // compromised or misconfigured sender must not be able to bounce a user
@@ -161,10 +195,10 @@ self.addEventListener('notificationclick', (event) => {
   try {
     target = new URL(rawUrl, self.location.origin);
     if (target.origin !== self.location.origin) {
-      target = new URL('/notifications.html', self.location.origin);
+      target = new URL('/notifications', self.location.origin);
     }
   } catch (_) {
-    target = new URL('/notifications.html', self.location.origin);
+    target = new URL('/notifications', self.location.origin);
   }
 
   event.waitUntil((async () => {

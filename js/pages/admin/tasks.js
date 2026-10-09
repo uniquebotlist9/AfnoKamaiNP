@@ -11,7 +11,7 @@ import {
 // no write can be forgotten.
 const addDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsAddDoc(...a));
 const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(...a));
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR, fmtDate, toPaisa, TASK_CATEGORIES } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { emptyState, skeletonRows, badge, modal, btnBusy, toast, withDeadline, WRITE_DEADLINE_MS } from '../../ui.js';

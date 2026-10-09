@@ -10,12 +10,12 @@ import {
 // This module's only write is the presence heartbeat — fire-and-forget, but
 // there is no reason for it to be unbounded either.
 const setDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsSetDoc(...a));
-import { requireAdminAccess, doLogout, ensureConfigured, redirectSignal, isRedirect } from './guard.js';
+import { requireAdminAccess, doLogout, ensureConfigured, redirectSignal, isRedirect, stopSignal, readActiveProfile } from './guard.js';
 import { initTheme, mountThemeControl } from './theme.js';
 import { sweepHolds } from './admin-actions.js';
 import { icon, logo } from './icons.js';
 import { esc, initials } from './utils.js';
-import { initOfflineBanner, renderMountFailure, withDeadline, WRITE_DEADLINE_MS, toast } from './ui.js';
+import { initOfflineBanner, renderMountFailure, withDeadline, armMountWatch, WRITE_DEADLINE_MS, toast } from './ui.js';
 import { initInstallPopup } from './install-popup.js';
 
 const PAGES = {
@@ -35,9 +35,27 @@ const PAGES = {
   settings: { title: 'Settings', icon: 'settings' }
 };
 
+/**
+ * Warm a nav link's target on hover/tap-start so admin sections switch
+ * directly instead of click → round-trip → splash (mirrors js/shell.js).
+ * One shot per link per page load.
+ */
+function initNavPrefetch() {
+  const seen = new Set();
+  const warm = (a) => {
+    if (!a || a.origin !== location.origin) return;
+    if (seen.has(a.href) || a.href === location.href) return;
+    seen.add(a.href);
+    fetch(a.href, { credentials: 'same-origin' }).catch(() => {});
+  };
+  const on = (e) => { const a = e.target.closest && e.target.closest('a[href]'); if (a) warm(a); };
+  document.addEventListener('pointerover', on, { passive: true });
+  document.addEventListener('pointerdown', on, { passive: true });
+}
+
 function navLink(id, current, badgeKey) {
   const p = PAGES[id];
-  const href = id === 'index' ? '/admin/index.html' : `/admin/${id}.html`;
+  const href = id === 'index' ? '/admin' : `/admin/${id}`;
   return `
     <a class="side-link ${current === id ? 'active' : ''}" href="${href}" ${current === id ? 'aria-current="page"' : ''}>
       ${icon(p.icon)}<span>${esc(p.title)}</span>
@@ -52,22 +70,33 @@ let installEvent = null;
 export async function mountAdminShell(pageId) {
   if (!ensureConfigured()) throw redirectSignal();
   initTheme();
-  let access;
-  try {
-    access = await requireAdminAccess();
-  } catch (e) {
-    if (isRedirect(e)) throw e;
-    renderMountFailure('Could not load the admin panel', 'Check your connection and try again.');
-    throw e;
-  }
-  const { user, profile } = access;
+
+  const gate = async () => {
+    try {
+      return await requireAdminAccess();
+    } catch (e) {
+      if (isRedirect(e)) throw e;
+      renderMountFailure('Could not load the admin panel', 'Check your connection and try again.');
+      // Same convention as mountShell: the friendly screen is already up, stop
+      // this page silently instead of surfacing a raw module-level error.
+      throw stopSignal();
+    }
+  };
+
+  // PAINT FIRST (see mountShell): the admin chrome needs only fullName/email
+  // from the local profile mirror, so the shell goes on screen without
+  // waiting out Firebase Auth's accounts:lookup; the real claims gate runs
+  // right after paint. First run — no mirror — keeps the blocking path.
+  let access = null;
+  let profile = readActiveProfile();
+  if (!profile) { access = await gate(); profile = access.profile; }
 
   const layout = document.createElement('div');
   layout.className = 'app-layout admin';
   layout.innerHTML = `
     <a class="skip-link" href="#page-content">Skip to main content</a>
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="/admin/index.html">${logo({ light: true })}</a>
+      <a class="brand" href="/admin">${logo({ light: true })}</a>
       <div style="padding:0 10px 16px">
         <span class="badge tone-gold" style="background:rgba(217,166,46,.15); color:var(--gold-500)">${icon('shield')} Administrator</span>
       </div>
@@ -90,7 +119,7 @@ export async function mountAdminShell(pageId) {
       <header class="topbar">
         <button class="btn-icon menu-btn" id="menu-btn" aria-label="Open navigation">${icon('menu')}</button>
         <div class="topbar-actions">
-          <a class="btn ghost btn-sm" href="/dashboard.html" style="text-decoration:none">${icon('arrowRight')} User app</a>
+          <a class="btn ghost btn-sm" href="/dashboard" style="text-decoration:none">${icon('arrowRight')} User app</a>
           <button class="avatar-btn" id="user-btn" aria-label="Account menu"><span class="avatar gold">${esc(initials(profile.fullName))}</span></button>
         </div>
       </header>
@@ -102,12 +131,24 @@ export async function mountAdminShell(pageId) {
       </main>
     </div>
     <nav class="mobile-nav" style="grid-template-columns:repeat(4,1fr)" aria-label="Quick navigation">
-      <a href="/admin/index.html" class="${pageId === 'index' ? 'active' : ''}">${icon('dashboard')}<span>Overview</span></a>
-      <a href="/admin/reviews.html" class="${pageId === 'reviews' ? 'active' : ''}">${icon('check')}<span>Reviews</span></a>
-      <a href="/admin/withdrawals.html" class="${pageId === 'withdrawals' ? 'active' : ''}">${icon('wallet')}<span>Payouts</span></a>
+      <a href="/admin" class="${pageId === 'index' ? 'active' : ''}">${icon('dashboard')}<span>Overview</span></a>
+      <a href="/admin/reviews" class="${pageId === 'reviews' ? 'active' : ''}">${icon('check')}<span>Reviews</span></a>
+      <a href="/admin/withdrawals" class="${pageId === 'withdrawals' ? 'active' : ''}">${icon('wallet')}<span>Payouts</span></a>
       <button id="more-btn">${icon('menu')}<span>More</span></button>
     </nav>`;
   document.body.appendChild(layout);
+  // Shell is on screen — retire the inline splash and start the watchdog.
+  document.getElementById('ak-splash')?.remove();
+  armMountWatch();
+  initNavPrefetch();
+
+  // Shell is on screen — finish the real claims gate here, where the slow
+  // auth emission no longer hides behind the splash.
+  if (!access) {
+    access = await gate();
+    profile = access.profile;
+  }
+  const { user } = access;
 
   const content = layout.querySelector('#page-content');
 
@@ -129,7 +170,7 @@ export async function mountAdminShell(pageId) {
       <div style="padding:8px 12px 4px" id="um-theme"></div>
       <button id="um-logout" class="danger">${icon('logout')} Log out</button>`;
     layout.querySelector('.topbar-actions').appendChild(menu);
-    menu.querySelector('#um-settings').addEventListener('click', () => { location.href = '/admin/settings.html'; });
+    menu.querySelector('#um-settings').addEventListener('click', () => { location.href = '/admin/settings'; });
     menu.querySelector('#um-logout').addEventListener('click', () => doLogout());
     mountThemeControl(menu.querySelector('#um-theme'));
     const installBtn = menu.querySelector('#um-install');
@@ -173,7 +214,7 @@ export async function mountAdminShell(pageId) {
   // switches), so a message arriving while the tab is hidden still toasts on
   // the first tick after return.
   let chatsFirstSnap = true;
-  const onChatsPage = () => /\/admin\/chats\.html/i.test(location.pathname);
+  const onChatsPage = () => /\/admin\/chats(\.html)?$/i.test(location.pathname);
   const badgeDefs = [
     { key: 'reviews', col: 'taskAssignments', field: 'status', values: ['requested', 'submitted'] },
     { key: 'withdrawals', col: 'withdrawals', field: 'status', values: ['pending', 'under_review'] },
@@ -206,7 +247,7 @@ export async function mountAdminShell(pageId) {
                 title: 'Chats',
                 type: 'info',
                 duration: 7000,
-                action: { label: 'Open', onClick: () => { location.href = `/admin/chats.html?uid=${ch.doc.id}`; } }
+                action: { label: 'Open', onClick: () => { location.href = `/admin/chats?uid=${ch.doc.id}`; } }
               });
             }
           }

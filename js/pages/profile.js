@@ -159,7 +159,7 @@ content.querySelector('#pw-form').addEventListener('submit', async (e) => {
     notifySelfSecurity('password_changed', {
       title: 'Password changed',
       body: 'Your AfnoKamai password was changed. If this was not you, reset your password immediately and review your sessions.',
-      link: 'profile.html'
+      link: 'profile'
     }).catch(() => {});
     toast('Your password has been updated.', { type: 'success', title: 'Password changed' });
     e.target.reset();
@@ -224,7 +224,7 @@ content.querySelector('#pin-btn').addEventListener('click', () => {
       notifySelfSecurity('pin_changed', {
         title: 'Security PIN changed',
         body: 'Your 4-digit security PIN was changed. This PIN authorises withdrawals — if you did not change it, contact support now.',
-        link: 'profile.html'
+        link: 'profile'
       }).catch(() => {});
       m.close();
       toast('Your security PIN has been updated.', { type: 'success', title: 'PIN changed' });

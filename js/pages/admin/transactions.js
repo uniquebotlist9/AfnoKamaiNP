@@ -1,7 +1,7 @@
 // ─── Admin: all-platform transaction ledger ──────────────────────────
 import { db } from '../../firebase.js';
 import { collection, query, where, orderBy, limit, getDocs, startAfter } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR, fmtDateTime, TX_TYPE, TX_STATUS } from '../../utils.js';
 import { emptyState, skeletonRows, autoPager } from '../../ui.js';
 

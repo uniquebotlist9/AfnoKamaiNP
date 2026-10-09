@@ -21,12 +21,12 @@ if (ensureConfigured()) {
       <p class="muted" style="max-width:340px">AfnoKamai could not reach the server in time. Check your connection and try again.</p>
       <div style="display:flex; gap:10px; justify-content:center; margin-top:16px; flex-wrap:wrap">
         <button class="btn primary" id="boot-retry">Try again</button>
-        <a class="btn ghost" href="login.html">Go to login</a>
+        <a class="btn ghost" href="login">Go to login</a>
       </div>`;
     screen.querySelector('#boot-retry').addEventListener('click', () => location.reload());
   };
 
-  const slowTimer = setTimeout(showSlowState, 12000);
+  const slowTimer = setTimeout(showSlowState, 7000);
 
   routeOnBoot({
     onStage: (text) => { if (status && !document.getElementById('boot-screen')?.dataset.slow) status.textContent = text; }

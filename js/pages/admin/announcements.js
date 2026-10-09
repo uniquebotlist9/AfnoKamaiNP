@@ -12,7 +12,7 @@ import {
 const addDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsAddDoc(...a));
 const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(...a));
 const deleteDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsDeleteDoc(...a));
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtDateTime } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { emptyState, skeletonRows, badge, modal, confirmDialog, btnBusy, toast, autoPager, withDeadline, WRITE_DEADLINE_MS } from '../../ui.js';

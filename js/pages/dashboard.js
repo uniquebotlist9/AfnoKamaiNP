@@ -28,6 +28,17 @@ const ACTIVITY_ICONS = {
   referral_review: { ic: 'shield', tone: 'amber' }
 };
 
+// ── Announcement banner ──
+// Started BEFORE the shell mount so it travels in parallel with the auth +
+// profile round trip instead of adding a serial fetch between the skeleton
+// and the hero. Result is consumed below.
+const annPromise = getDocs(query(
+  collection(db, 'announcements'),
+  where('published', '==', true),
+  orderBy('publishedAt', 'desc'),
+  limit(1)
+)).catch(() => null);
+
 let { user, profile, content } = await mountShell('dashboard');
 if (profile.status === 'banned') {
   document.getElementById('page-skeleton')?.remove();
@@ -46,15 +57,10 @@ const ktLabel = (d) => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Kathmandu', day: 'numeric', month: 'short'
 }).format(d);
 
-// ── Announcement banner ──
+// ── Announcement banner (result of the parallel read) ──
 try {
-  const annSnap = await getDocs(query(
-    collection(db, 'announcements'),
-    where('published', '==', true),
-    orderBy('publishedAt', 'desc'),
-    limit(1)
-  ));
-  if (!annSnap.empty) {
+  const annSnap = await annPromise;
+  if (annSnap && !annSnap.empty) {
     const a = annSnap.docs[0].data();
     const dismissed = JSON.parse(localStorage.getItem('ak_dismissed_ann') || '[]');
     if (!dismissed.includes(annSnap.docs[0].id)) {
@@ -86,8 +92,8 @@ content.innerHTML = `
       <p class="sub">Here's your AfnoKamai activity overview.</p>
     </div>
     <div class="hero-cta">
-      <a class="btn btn-gold" href="earn.html">${icon('briefcase')} Find tasks</a>
-      <a class="btn ghost" style="color:#fff; border-color:rgba(255,255,255,.25)" href="withdraw.html">${icon('wallet')} Withdraw</a>
+      <a class="btn btn-gold" href="earn">${icon('briefcase')} Find tasks</a>
+      <a class="btn ghost" style="color:#fff; border-color:rgba(255,255,255,.25)" href="withdraw">${icon('wallet')} Withdraw</a>
     </div>
   </section>
 
@@ -99,7 +105,7 @@ content.innerHTML = `
   </div>
   <div id="task-strip" style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 2px 0"></div>
 
-  <a href="referral.html" class="card" style="display:flex; gap:14px; align-items:center; padding:16px 20px; margin-top:16px; text-decoration:none">
+  <a href="referral" class="card" style="display:flex; gap:14px; align-items:center; padding:16px 20px; margin-top:16px; text-decoration:none">
     <span style="width:40px; height:40px; border-radius:12px; flex:none; display:inline-flex; align-items:center; justify-content:center; background:var(--gold-100); color:var(--gold-700); font-size:20px">${icon('link')}</span>
     <span style="flex:1; min-width:0">
       <span style="display:block; font-weight:700; font-size:14.5px; color:var(--ink)">Invite friends, earn together</span>
@@ -128,7 +134,7 @@ content.innerHTML = `
 
   <div class="grid grid-2" style="margin-top:16px">
     <div class="card">
-      <div class="card-head"><h3>Recent activity</h3><a href="notifications.html" class="small" style="font-weight:600">View all</a></div>
+      <div class="card-head"><h3>Recent activity</h3><a href="notifications" class="small" style="font-weight:600">View all</a></div>
       <div class="activity-list" id="activity-list"><div class="state-block loading"><span class="spin dark"></span></div></div>
     </div>
     <div class="card">
@@ -297,7 +303,7 @@ async function buildCharts() {
       icon: 'trendUp',
       title: 'No earnings yet',
       message: 'Once you complete and get tasks approved, your earnings chart will appear here.',
-      actionHTML: '<a class="btn subtle" href="earn.html">Browse tasks</a>'
+      actionHTML: '<a class="btn subtle" href="earn">Browse tasks</a>'
     });
   }
 
@@ -360,7 +366,7 @@ buildCharts().catch(() => {
         icon: 'bell',
         title: 'No activity yet',
         message: 'Task updates, rewards, and withdrawals will show up here.',
-        actionHTML: '<a class="btn subtle" href="earn.html">Request your first task</a>'
+        actionHTML: '<a class="btn subtle" href="earn">Request your first task</a>'
       });
       return;
     }
@@ -370,7 +376,7 @@ buildCharts().catch(() => {
       const amt = n.amountPaisa != null
         ? `<span class="act-amt ${n.amountPaisa >= 0 ? 'pos' : 'neg'}">${esc(fmtNPR(n.amountPaisa, { sign: 1 }))}</span>` : '';
       return `
-        <a class="activity-item" href="${esc(safeHref(n.link, 'notifications.html'))}">
+        <a class="activity-item" href="${esc(safeHref(n.link, 'notifications'))}">
           <span class="act-ic ${meta.tone}">${icon(meta.ic)}</span>
           <div class="act-body">
             <div class="act-title">${esc(n.title || 'Notification')}</div>

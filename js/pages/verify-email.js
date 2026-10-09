@@ -158,7 +158,7 @@ if (isConfigured()) {
   async function onAuthStateChangedProxy() {
     const { onAuth } = await import('../guard.js');
     onAuth(async (u) => {
-      if (!u) { location.replace('login.html'); return; }
+      if (!u) { location.replace('login'); return; }
       user = u;
       emailPill.textContent = u.email;
       if (u.emailVerified) {
@@ -207,7 +207,7 @@ if (isConfigured()) {
       confirmText: 'Log out & change',
       danger: false
     });
-    if (ok) { try { await signOut(auth); } catch (_) {} location.replace('signup.html'); }
+    if (ok) { try { await signOut(auth); } catch (_) {} location.replace('signup'); }
   });
 
   document.getElementById('logout-btn').addEventListener('click', () => doLogout());

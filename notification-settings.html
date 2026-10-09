@@ -7,12 +7,12 @@
   <meta name="description" content="Choose which AfnoKamai notifications reach you on this device and manage the devices registered for push alerts.">
   <meta name="robots" content="noindex, nofollow">
   <meta name="author" content="AfnoKamai">
-  <link rel="canonical" href="https://afnokamainp.web.app/notification-settings.html">
+  <link rel="canonical" href="https://afnokamainp.web.app/notification-settings">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="AfnoKamai">
   <meta property="og:title" content="Notification settings — AfnoKamai">
   <meta property="og:description" content="Choose which AfnoKamai notifications reach you on this device and manage the devices registered for push alerts.">
-  <meta property="og:url" content="https://afnokamainp.web.app/notification-settings.html">
+  <meta property="og:url" content="https://afnokamainp.web.app/notification-settings">
   <meta property="og:image" content="https://afnokamainp.web.app/assets/social-preview.png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
@@ -30,11 +30,13 @@
   <link rel="manifest" href="manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://sgp.cloud.appwrite.io" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
+  <link rel="stylesheet" media="print" data-akfonts href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
   <script>try{var t=localStorage.getItem('ak_theme');if(t==='dark'||((!t||t==='system')&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.dataset.theme='dark';}catch(e){}</script>
-  <link rel="stylesheet" href="css/global.css?v=5">
+  <link rel="stylesheet" href="css/global.css?v=6">
   <link rel="stylesheet" href="css/app.css?v=7">
-  <link rel="stylesheet" href="css/chat.css?v=3">
   <link rel="stylesheet" href="css/notifications.css?v=1">
   <script type="importmap">
   {
@@ -47,9 +49,44 @@
     }
   }
 </script>
+    <link rel="modulepreload" href="/js/shell.js" crossorigin>
+  <link rel="modulepreload" href="/js/firebase.js" crossorigin>
+  <link rel="modulepreload" href="/js/firebase-config.js" crossorigin>
+  <link rel="modulepreload" href="/js/appwrite.js" crossorigin>
+  <link rel="modulepreload" href="/js/appwrite-db.js" crossorigin>
+  <link rel="modulepreload" href="/js/guard.js" crossorigin>
+  <link rel="modulepreload" href="/js/utils.js" crossorigin>
+  <link rel="modulepreload" href="/js/icons.js" crossorigin>
+  <link rel="modulepreload" href="/js/referral.js" crossorigin>
+  <link rel="modulepreload" href="/js/ui.js" crossorigin>
+  <link rel="modulepreload" href="/js/listen.js" crossorigin>
+  <link rel="modulepreload" href="/js/theme.js" crossorigin>
+  <link rel="modulepreload" href="/js/install-popup.js" crossorigin>
+  <link rel="modulepreload" href="/js/push.js" crossorigin>
+  <link rel="modulepreload" href="/js/notify.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js" crossorigin>
+    <link rel="modulepreload" href="/js/api.js" crossorigin>
+  <link rel="modulepreload" href="/js/pin.js" crossorigin>
   <script type="module" src="js/pages/notification-settings.js"></script>
+  <script>
+(function(){var a=document.querySelectorAll('link[data-akfonts]');for(var i=0;i<a.length;i++){(function(l){if(l.sheet){l.media='all';return}l.addEventListener('load',function(){l.media='all'})})(a[i])}})();
+(function(){setTimeout(function(){var s=document.getElementById('ak-splash')||document.getElementById('boot-screen');if(!s||s.dataset.slow||s.querySelector('button'))return;var m=document.getElementById('ak-splash-msg');if(m)m.textContent='This is taking longer than usual';var b=document.createElement('button');b.textContent='Tap to retry';b.style.cssText='margin-top:18px;padding:10px 20px;border:0;border-radius:10px;background:#12996B;color:#fff;font:600 14px system-ui,-apple-system,sans-serif;cursor:pointer';b.addEventListener('click',function(){location.reload()});s.appendChild(b)},9000)})();
+</script>
 </head>
 <body>
+  <style>
+    .ak-splash{position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:13px;background:linear-gradient(135deg,#0A3D2C 0%,#0E5C41 55%,#12966A 145%);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;opacity:0;pointer-events:none;animation:akfade .16s ease 1.3s forwards}
+    .ak-splash svg{filter:drop-shadow(0 10px 26px rgba(0,0,0,.35));animation:akpop .55s cubic-bezier(.2,.9,.3,1.25) 1.3s both}
+    .ak-word{font-size:21px;font-weight:800;letter-spacing:.2px}
+    .ak-word span{color:#7BE0BC}
+    .ak-bar{width:150px;height:4px;border-radius:99px;background:rgba(255,255,255,.16);overflow:hidden;margin-top:3px}
+    .ak-bar i{display:block;width:38%;height:100%;border-radius:99px;background:linear-gradient(90deg,transparent,#7BE0BC,transparent);animation:aksweep 1.15s ease-in-out 1.3s infinite}
+    .ak-msg{font-size:13px;font-weight:500;color:rgba(255,255,255,.72);letter-spacing:.2px}
+    @keyframes aksweep{0%{transform:translateX(-110%)}100%{transform:translateX(360%)}}@keyframes akfade{to{opacity:1;pointer-events:auto}}
+    @keyframes akpop{from{opacity:0;transform:scale(.72)}to{opacity:1;transform:scale(1)}}
+    @media (prefers-reduced-motion:reduce){.ak-splash svg{animation:none}.ak-bar i{animation:none;width:100%;opacity:.55}}
+  </style><div class="ak-splash" id="ak-splash" role="status" aria-live="polite"><svg width="60" height="60" viewBox="0 0 96 96" aria-hidden="true"><defs><linearGradient id="ak-splash-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#12996B"/><stop offset="1" stop-color="#0A3D2C"/></linearGradient></defs><rect x="4" y="4" width="88" height="88" rx="22" fill="url(#ak-splash-bg)"/><path d="M24 22 L24 50 L34 44 L24 38 Z" fill="#D9A62E" opacity="0.92"/><path d="M24 38 L24 66 L38 58 L24 50 Z" fill="#FFFFFF" opacity="0.85"/><path d="M42 66 L53 53 L61 59 L75 39" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="75" cy="39" r="6" fill="#D9A62E"/></svg><div class="ak-word">Afno<span>Kamai</span></div><div class="ak-bar" aria-hidden="true"><i></i></div><div class="ak-msg" id="ak-splash-msg">Loading AfnoKamai…</div></div>
   <noscript>
     <div style="max-width:520px;margin:64px auto;padding:24px;font-family:system-ui,sans-serif;text-align:center">
       <h1 style="font-size:20px">AfnoKamai needs JavaScript</h1>

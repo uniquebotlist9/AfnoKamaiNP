@@ -115,7 +115,7 @@ if (isConfigured()) {
       const { ensureUserDocs } = await import('../api.js');
       await ensureUserDocs(cred.user).catch(() => { /* healed on next load */ });
       try { await sendEmailVerification(cred.user); } catch (_) { /* resend available on next screen */ }
-      location.replace('verify-email.html');
+      location.replace('verify-email');
     } catch (err) {
       btnBusy(btn, false);
       showFormError(errId, authErrorText(err));

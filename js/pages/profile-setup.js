@@ -29,9 +29,9 @@ if (isConfigured()) {
   (async () => {
     // Wait for Firebase to restore the session before reading the user —
     // a synchronous auth.currentUser read races the IndexedDB restore and
-    // bounces freshly logged-in users back to login.html.
+    // bounces freshly logged-in users back to login.
     const user = await waitForAuth();
-    if (!user) { location.replace('login.html'); return; }
+    if (!user) { location.replace('login'); return; }
     if (!user.emailVerified) {
       // Check the user document's emailVerified first (programmatically
       // settable by the verify-email page) — Firebase Auth's flag can lag
@@ -45,7 +45,7 @@ if (isConfigured()) {
       } catch (_) {
         // keep the Firebase value
       }
-      if (!emailVerified) { location.replace('verify-email.html'); return; }
+      if (!emailVerified) { location.replace('verify-email'); return; }
     }
     const profile = await fetchProfile(user.uid);
     if (profile) {
@@ -54,7 +54,7 @@ if (isConfigured()) {
     }
     if (profile && profile.profileComplete && profile.pinSetAt) {
       // nothing left to set up
-      location.replace('dashboard.html');
+      location.replace('dashboard');
       return;
     }
     if (profile && profile.profileComplete) setStep(2); else setStep(1);
@@ -148,7 +148,7 @@ if (isConfigured()) {
   });
 
   document.getElementById('go-dashboard').addEventListener('click', () => {
-    location.replace('dashboard.html');
+    location.replace('dashboard');
   });
 
   // Deep link to PIN step when personal info is already complete

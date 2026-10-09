@@ -217,6 +217,136 @@ async function mintSession(uid) {
   throw new Error((r.json && r.json.message) || 'could not mint a session (' + r.status + ')');
 }
 
+// ── Firebase Auth: the credential a person actually holds ─────────────
+//
+// Purging rows is pointless while the person can still sign in: Firebase
+// Auth IS the login (Google/Gmail or password), and no browser can delete an
+// account but its own. So an account purge starts here, server-side, with a
+// service-account key injected as the FIREBASE_SERVICE_ACCOUNT environment
+// variable (JSON, never committed — see scripts/serviceAccount.json, which is
+// gitignored).
+//
+// The key belongs to the Firebase-managed service account of the LIVE
+// project (afnokamainp) and carries only `roles/firebaseauth.admin`.
+
+let saKey = undefined; // undefined = not read yet, false = not configured
+
+function serviceAccount() {
+  if (saKey !== undefined) return saKey;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) { saKey = false; return saKey; }
+  try {
+    const parsed = JSON.parse(raw);
+    saKey = (parsed && parsed.private_key && parsed.client_email) ? parsed : false;
+  } catch (_) { saKey = false; }
+  return saKey;
+}
+
+let fbToken = null; // { tok, at } — minted once per cold start
+
+/**
+ * Exchange the service-account key for an OAuth access token.
+ *
+ * The scope is deliberately `cloud-platform` rather than the narrower-looking
+ * `identityplatform`: that scope name is not accepted by the token endpoint
+ * here (it silently answers with an `id_token` and no `access_token`), and
+ * the SA's reach is bounded by `roles/firebaseauth.admin` anyway.
+ */
+async function firebaseAccessToken() {
+  if (fbToken && Date.now() - fbToken.at < 50 * 60 * 1000) return fbToken.tok;
+  const sa = serviceAccount();
+  if (!sa) {
+    const e = new Error('account deletion is not configured (FIREBASE_SERVICE_ACCOUNT missing)');
+    e.status = 500; e.code = 'failed-precondition';
+    throw e;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const unsigned = b64({ alg: 'RS256', typ: 'JWT', kid: sa.private_key_id }) + '.' + b64({
+    iss: sa.client_email,
+    scope: 'https://www.googleapis.com/auth/cloud-platform',
+    aud: 'https://oauth2.googleapis.com/token',
+    iat: now, exp: now + 3600
+  });
+  const signature = crypto.createSign('RSA-SHA256')
+    .update(unsigned)
+    .sign(crypto.createPrivateKey(sa.private_key), 'base64url');
+
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion: unsigned + '.' + signature
+    })
+  });
+  const json = await res.json().catch(() => null);
+  if (!res.ok || !json || !json.access_token) {
+    const e = new Error('could not obtain Firebase Admin credentials: ' +
+      JSON.stringify(json || {}).slice(0, 200));
+    e.status = 502; e.code = 'unavailable';
+    throw e;
+  }
+  fbToken = { tok: json.access_token, at: Date.now() };
+  return fbToken.tok;
+}
+
+/**
+ * Delete the Firebase Auth account — the Gmail/password login itself.
+ * Returns `{ deleted }`; an account that is already gone counts as success
+ * so a purge interrupted halfway can simply be run again.
+ */
+async function deleteFirebaseUser(uid) {
+  const token = await firebaseAccessToken();
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/projects/${FB_PROJECT}/accounts:delete`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localId: uid })
+    });
+  const text = await res.text();
+  if (res.ok) return { deleted: true };
+  if (/USER_NOT_FOUND|"not ?found"|404/i.test(text)) return { deleted: false };
+  // Anything else (403 revoked key, 400 quota, network) must abort the purge
+  // BEFORE a single row is touched: a half-deleted account is recoverable by
+  // running again, a deleted profile with a live login is a ghost.
+  const e = new Error('Firebase Auth refused the delete: ' + text.slice(0, 300));
+  e.status = 502; e.code = 'unavailable';
+  throw e;
+}
+
+/**
+ * Read the target's Firebase Auth record (for its `admin` claim).
+ * Returns null when the account does not exist — admin lookup answers 200
+ * with no `users` entry rather than 404, and a re-run of an interrupted
+ * purge must keep working.
+ */
+async function lookupFirebaseUser(uid) {
+  const token = await firebaseAccessToken();
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/projects/${FB_PROJECT}/accounts:lookup`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ localId: [uid] })
+    });
+  const json = await res.json().catch(() => null);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    const msg = JSON.stringify(json || {}).slice(0, 200);
+    if (/USER_NOT_FOUND|"not ?found"/i.test(msg)) return null;
+    const e = new Error('Firebase Auth refused the lookup: ' + msg);
+    e.status = 502; e.code = 'unavailable';
+    throw e;
+  }
+  return (json && json.users && json.users[0]) || null;
+}
+
+/** The claim is the source of truth; the profile row can be missing or stale. */
+function hasAdminClaim(customAttributes) {
+  if (!customAttributes) return false;
+  try { return JSON.parse(customAttributes).admin === true; } catch (_) { return false; }
+}
+
 // ── Rate limiting ─────────────────────────────────────────────────────
 // The proxy is the browser's ONLY write path, so a runaway loop or a
 // scripted flood would otherwise burn the project's daily write budget —
@@ -439,6 +569,228 @@ async function doWrite(payload, id) {
   return { ok: true, count: batch.length };
 }
 
+// ── Account purge ─────────────────────────────────────────────────────
+//
+// "Delete the user" means: the Firebase Auth login (their Gmail), the
+// mirrored Appwrite identity, and every row they own. Ownership is not
+// re-invented here — it is read from src/appwrite-acl.mjs, the same
+// OWNER_FIELDS / OWNER_BY_DOCID / participants rule the read grants use, so
+// "a row this person could see as their own" and "a row this purge removes"
+// can never drift apart.
+//
+// A row naming two people (a referral, its rewards and events) is removed
+// too: both sides are owners of it by the app's own definition, and leaving
+// it behind would keep a record of a person we just promised to erase.
+// Balances and transactions belonging to the OTHER side are owned by that
+// side alone and are never touched.
+const GLOBAL_TABLES = new Set(['config', 'stats', 'announcements', 'tasks']);
+const SWEEP_CONCURRENCY = 10;
+
+/** Run `fn` over `items` with bounded parallelism, preserving result order. */
+async function pool(items, fn, lanes = SWEEP_CONCURRENCY) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(lanes, items.length)) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+function rowsOf(json) {
+  if (!json) return [];
+  if (Array.isArray(json.documents)) return json.documents;
+  if (Array.isArray(json.rows)) return json.rows;
+  if (Array.isArray(json.data)) return json.data;
+  return [];
+}
+
+/**
+ * Every row id in `table` matching one predicate.
+ *
+ * Queries are AND-combined by Appwrite, so each call carries exactly one
+ * condition. Pages are walked with `cursorAfter` until an EMPTY page, never
+ * until `rows.length < limit`: this server ignores a bare `?limit=` and a
+ * page can come back shorter than asked, and stopping early would mean a
+ * purge that silently leaves rows behind.
+ */
+async function listRowIds(table, predicate) {
+  const ids = [];
+  let cursor = null;
+  for (let page = 0; page < 200; page++) {
+    const queries = [{ method: 'limit', values: [500] }, predicate];
+    if (cursor) queries.push({ method: 'cursorAfter', values: [cursor] });
+    const qs = queries
+      .map((q, i) => `queries[${i}]=${encodeURIComponent(JSON.stringify(q))}`)
+      .join('&');
+    const r = await aw('GET', `${rowsBase(table)}?${qs}`);
+    if (r.status >= 300) {
+      throw new Error((r.json && r.json.message) || `could not list ${table} (${r.status})`);
+    }
+    const rows = rowsOf(r.json);
+    if (!rows.length) break;
+    for (const row of rows) ids.push(row.$id);
+    cursor = rows[rows.length - 1].$id;
+  }
+  return ids;
+}
+
+async function tableColumns(table) {
+  const r = await aw('GET', `/tablesdb/${DB}/tables/${encodeURIComponent(table)}`);
+  if (r.status === 404) return null; // never provisioned — nothing to purge
+  if (r.status >= 300) {
+    throw new Error((r.json && r.json.message) || `could not read ${table} schema (${r.status})`);
+  }
+  return new Set(((r.json && r.json.columns) || []).map((c) => c.key));
+}
+
+/** Delete every row the given uid owns. Returns `{ table: count }`. */
+async function purgeUserRows(uid) {
+  const modules = await acl();
+  const tables = modules.TABLES.filter((t) => !GLOBAL_TABLES.has(t));
+
+  // Schema first (concurrently): which owner columns a table actually has
+  // decides which predicates are worth querying, and a missing table must
+  // not stop the rest of the purge.
+  const schemas = await pool(tables, async (table) => [table, await tableColumns(table)]);
+  const counts = {};
+
+  for (const [table, columns] of schemas) {
+    if (!columns) continue;
+
+    const predicates = [];
+    for (const field of modules.OWNER_FIELDS) {
+      if (columns.has(field)) predicates.push({ method: 'equal', attribute: field, values: [uid] });
+    }
+    if (columns.has('participants')) {
+      predicates.push({ method: 'contains', attribute: 'participants', values: [uid] });
+    }
+    // Not owner fields, but they are how these two tables address their owner:
+    // messages live under `conversations/{uid}`, and admin logs about a person
+    // are keyed by `targetId`.
+    if (table === 'messages' && columns.has('conversationId')) {
+      predicates.push({ method: 'equal', attribute: 'conversationId', values: [uid] });
+    }
+    if (table === 'adminLogs' && columns.has('targetId')) {
+      predicates.push({ method: 'equal', attribute: 'targetId', values: [uid] });
+    }
+
+    const ids = new Set();
+    if (modules.OWNER_BY_DOCID.has(table)) {
+      const own = await aw('GET', rowUrl(table, uid));
+      if (own.status < 300) ids.add(uid);
+      else if (own.status !== 404) {
+        throw new Error((own.json && own.json.message) || `could not read ${table}/${uid} (${own.status})`);
+      }
+    }
+    for (const predicate of predicates) {
+      for (const id of await listRowIds(table, predicate)) ids.add(id);
+    }
+    if (!ids.size) continue;
+
+    const results = await pool([...ids], (rowId) => aw('DELETE', rowUrl(table, rowId)));
+    let deleted = 0;
+    for (const r of results) {
+      if (r.status < 300 || r.status === 404) deleted++;
+      else console.warn(`[bridge] purge could not delete ${table}/${r.status}: ${(r.json && r.json.message) || ''}`);
+    }
+    if (deleted) counts[table] = deleted;
+  }
+  return counts;
+}
+
+const purgeLogId = () =>
+  'purged_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+
+/** What happened, recorded after the fact. Non-fatal: never fail a purge on it. */
+async function logPurge(actor, target, details) {
+  try {
+    const modules = await acl();
+    const data = {
+      adminId: actor.uid, adminEmail: actor.email,
+      action: 'user_purged', targetType: 'user', targetId: target.uid,
+      // metadata is a string column — an object is rejected (400) and the
+      // catch would silently swallow the whole audit row.
+      metadata: JSON.stringify(details), createdAt: new Date().toISOString()
+    };
+    const rowId = purgeLogId();
+    await aw('POST', rowsBase('adminLogs'), {
+      rowId, data,
+      permissions: modules.permissionsFor('adminLogs', data, rowId)
+    });
+  } catch (e) {
+    console.warn('[bridge] purge audit log failed: ' + (e && e.message));
+  }
+}
+
+/**
+ * action 'delete-user' — irreversible, admin-only, and ordered so the worst
+ * possible interruption is recoverable:
+ *
+ *   1. guards (admin claim, target shape, target is not an admin, not self)
+ *   2. Firebase Auth login deleted FIRST — from that moment the person cannot
+ *      sign in, and every later step can simply be re-run
+ *   3. Appwrite identity (mirrored email + sessions) deleted
+ *   4. rows purged
+ *   5. audit row written
+ *
+ * Nothing is touched before step 2 succeeds, so a missing or revoked
+ * credential aborts with the account fully intact.
+ */
+async function doDeleteUser(payload, id) {
+  if (!id.admin) {
+    const e = new Error('Administrator access is required for this action.');
+    e.status = 403; e.code = 'permission-denied';
+    throw e;
+  }
+  if (!takeToken('d:' + id.uid, 5, 0.05)) throw rateLimited();
+
+  const uid = String(payload.uid || '');
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(uid)) throw shapeError('malformed user id');
+  if (uid === id.uid) throw shapeError('you cannot delete your own account');
+  if (payload.confirm !== true && payload.confirm !== 'DELETE') {
+    throw shapeError('confirmation required');
+  }
+
+  const targetRow = await readRow('users', uid);
+  const targetAuth = await lookupFirebaseUser(uid);
+  if ((targetRow && targetRow.role === 'admin') || hasAdminClaim(targetAuth && targetAuth.customAttributes)) {
+    const e = new Error('Administrators cannot be deleted here.');
+    e.status = 403; e.code = 'permission-denied';
+    throw e;
+  }
+  const wallet = await readRow('wallets', uid);
+
+  const auth = await deleteFirebaseUser(uid);
+
+  // The mirrored Appwrite user holds the email address and every session the
+  // person still has open elsewhere. 404 = never mirrored (a Firestore-era
+  // row), which is not a reason to stop.
+  const identity = await aw('DELETE', '/users/' + encodeURIComponent(uid));
+  if (identity.status >= 300 && identity.status !== 404) {
+    throw new Error((identity.json && identity.json.message) || 'could not remove the Appwrite identity');
+  }
+
+  const rows = await purgeUserRows(uid);
+
+  const details = {
+    email: (targetRow && targetRow.email) || '',
+    authDeleted: auth.deleted,
+    identityDeleted: identity.status < 300,
+    rows,
+    totalRows: Object.values(rows).reduce((a, b) => a + b, 0),
+    availablePaisa: (wallet && wallet.availablePaisa) || 0,
+    holdPaisa: (wallet && wallet.holdPaisa) || 0
+  };
+  await logPurge(id, { uid }, details);
+
+  return { ok: true, uid, rows, totalRows: details.totalRows };
+}
+
 // ── Runtime glue ───────────────────────────────────────────────────────
 function parseBody(req) {
   try {
@@ -479,6 +831,11 @@ async function handler(ctx) {
     if (payload.action === 'write') {
       const id = await verifyIdToken(payload.idToken);
       return send(await doWrite(payload, id), 200);
+    }
+
+    if (payload.action === 'delete-user') {
+      const id = await verifyIdToken(payload.idToken);
+      return send(await doDeleteUser(payload, id), 200);
     }
 
     const e = new Error('unknown action');

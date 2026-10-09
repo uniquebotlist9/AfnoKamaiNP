@@ -47,7 +47,7 @@ function leaveMaintenance() {
   if (leaving) return;
   leaving = true;
   onAuth(async (u) => {
-    if (!u) { location.replace('login.html'); return; }
+    if (!u) { location.replace('login'); return; }
     const profile = await fetchProfile(u.uid).catch(() => null);
     location.replace(destinationFor(u, profile));
   });
@@ -58,7 +58,7 @@ function leaveMaintenance() {
  *  the boot page routes to login/dashboard and has its own honest
  *  "taking longer than usual / try again" state for offline. */
 function bailToBoot() {
-  location.replace('index.html');
+  location.replace('/');
 }
 
 if (isConfigured()) {

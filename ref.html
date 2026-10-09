@@ -32,9 +32,12 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+  <link rel="preconnect" href="https://sgp.cloud.appwrite.io" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
+  <link rel="stylesheet" media="print" data-akfonts href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
   <script>try{var t=localStorage.getItem('ak_theme');if(t==='dark'||((!t||t==='system')&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.dataset.theme='dark';}catch(e){}</script>
-  <link rel="stylesheet" href="/css/global.css?v=5">
+  <link rel="stylesheet" href="/css/global.css?v=6">
   <link rel="stylesheet" href="/css/auth.css?v=2">
   <script type="importmap">
   {
@@ -47,7 +50,23 @@
     }
   }
 </script>
-  <script type="module" src="/js/pages/ref.js?v=2"></script>
+    <link rel="modulepreload" href="/js/firebase.js" crossorigin>
+  <link rel="modulepreload" href="/js/firebase-config.js" crossorigin>
+  <link rel="modulepreload" href="/js/appwrite.js" crossorigin>
+  <link rel="modulepreload" href="/js/appwrite-db.js" crossorigin>
+  <link rel="modulepreload" href="/js/guard.js" crossorigin>
+  <link rel="modulepreload" href="/js/utils.js" crossorigin>
+  <link rel="modulepreload" href="/js/icons.js" crossorigin>
+  <link rel="modulepreload" href="/js/referral.js" crossorigin>
+  <link rel="modulepreload" href="/js/ui.js" crossorigin>
+  <link rel="modulepreload" href="/js/auth-common.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js" crossorigin>
+  <link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js" crossorigin>
+  <script type="module" src="/js/pages/ref.js?v=3"></script>
+  <script>
+(function(){var a=document.querySelectorAll('link[data-akfonts]');for(var i=0;i<a.length;i++){(function(l){if(l.sheet){l.media='all';return}l.addEventListener('load',function(){l.media='all'})})(a[i])}})();
+(function(){setTimeout(function(){var s=document.getElementById('ak-splash')||document.getElementById('boot-screen');if(!s||s.dataset.slow||s.querySelector('button'))return;var m=document.getElementById('ak-splash-msg');if(m)m.textContent='This is taking longer than usual';var b=document.createElement('button');b.textContent='Tap to retry';b.style.cssText='margin-top:18px;padding:10px 20px;border:0;border-radius:10px;background:#12996B;color:#fff;font:600 14px system-ui,-apple-system,sans-serif;cursor:pointer';b.addEventListener('click',function(){location.reload()});s.appendChild(b)},9000)})();
+</script>
 </head>
 <body class="auth-body">
   <a class="skip-link" href="#main">Skip to main content</a>
@@ -88,7 +107,7 @@
             </div>
           </div>
         </div>
-        <p class="auth-switch">Already have an account? <a href="/login.html"><strong>Log in</strong></a></p>
+        <p class="auth-switch">Already have an account? <a href="/login"><strong>Log in</strong></a></p>
       </div>
     </main>
   </div>

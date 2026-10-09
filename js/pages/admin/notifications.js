@@ -12,7 +12,7 @@ import { db } from '../../firebase.js';
 import {
   collection, query, where, orderBy, limit, getDocs, doc, getDoc, getCountFromServer
 } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtRelative } from '../../utils.js';
 import { icon } from '../../icons.js';
 import {
@@ -73,7 +73,7 @@ content.innerHTML = `
       <div class="np-form">
         <label class="field">
           <span class="label">Audience</span>
-          <select id="np-audience" class="input">
+          <select id="np-audience" class="select">
             ${AUDIENCES.map((a) => `<option value="${a.id}">${esc(a.label)}</option>`).join('')}
           </select>
         </label>
@@ -86,14 +86,14 @@ content.innerHTML = `
 
         <label class="field">
           <span class="label">Category</span>
-          <select id="np-category" class="input">
+          <select id="np-category" class="select">
             ${SENDABLE.map((c) => `<option value="${c}">${esc(CATEGORIES[c].label)}</option>`).join('')}
           </select>
         </label>
 
         <label class="field">
           <span class="label">Priority</span>
-          <select id="np-priority" class="input">
+          <select id="np-priority" class="select">
             ${PRIORITIES.map((p) => `<option value="${p.id}">${esc(p.label)}</option>`).join('')}
           </select>
         </label>
@@ -111,7 +111,7 @@ content.innerHTML = `
 
         <label class="field">
           <span class="label">Link (optional)</span>
-          <input class="input" id="np-link" placeholder="withdraw.html" autocomplete="off">
+          <input class="input" id="np-link" placeholder="withdraw" autocomplete="off">
           <span class="hint">Root-relative page. Clicking the notification opens it.</span>
         </label>
       </div>

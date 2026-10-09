@@ -50,7 +50,7 @@ content.innerHTML = `
       <p class="sub">Questions about tasks, rewards or withdrawals — we're here to help.</p>
     </div>
     <div class="page-head-actions">
-      <a class="btn primary" href="chat.html">${icon('message')} Open chat</a>
+      <a class="btn primary" href="chat">${icon('message')} Open chat</a>
     </div>
   </div>
 

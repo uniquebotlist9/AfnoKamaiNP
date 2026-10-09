@@ -104,7 +104,7 @@ export function isValidHandle(h) {
   return HANDLE_REGEX.test(String(h || '')) && !RESERVED_HANDLES.includes(String(h || ''));
 }
 
-/** Cleanest public URL compatible with the hosting rewrite /ref/** → ref.html */
+/** Cleanest public URL compatible with the hosting rewrite /ref/** → /ref */
 export function referralLink(code) {
   return `https://afnokamainp.web.app/ref/${encodeURIComponent(String(code || '').toUpperCase())}`;
 }
@@ -329,16 +329,36 @@ export async function setReferralHandle(rawHandle) {
   const snap = await getDoc(userRef);
   const p = snap.exists() ? (snap.data() || {}) : {};
   if (!p.referralCode) throw new Error('Create your referral code first.');
-  if ((p.referralHandle || '') === handle) return { ok: true, handle };
+  const claimsHandle = (p.referralHandle || '') === handle;
+  // The profile field alone does NOT make the link work: /ref/<handle>
+  // resolves against the public referralHandles/{handle} row. When the
+  // profile already claims the handle, verify that row instead of
+  // reporting success unconditionally — a missing row (lost in the
+  // Firestore → Appwrite move, or a partially applied batch) must be
+  // recreated here, otherwise Save keeps saying "updated" for a link
+  // that still renders "This referral link isn't valid" for visitors.
+  if (claimsHandle) {
+    const row = await getDoc(doc(db, 'referralHandles', handle));
+    if (row.exists()) {
+      if ((row.data() || {}).userId === user.uid) return { ok: true, handle };
+      throw new Error('That referral handle was just taken by someone else. Please try another.');
+    }
+    // Row missing — fall through and recreate it (the user doc already
+    // claims the handle, so only the mapping row is written below).
+  }
   try {
     await runTransaction(db, async (tx) => {
       const hRef = doc(db, 'referralHandles', handle);
       const hSnap = await tx.get(hRef);
-      if (hSnap.exists()) throw new Error('taken');
-      const old = p.referralHandle ? doc(db, 'referralHandles', p.referralHandle) : null;
-      tx.set(hRef, { handle, userId: user.uid, code: p.referralCode, createdAt: serverTimestamp() });
+      if (hSnap.exists() && ((hSnap.data() || {}).userId !== user.uid)) throw new Error('taken');
+      const old = p.referralHandle && p.referralHandle !== handle
+        ? doc(db, 'referralHandles', p.referralHandle)
+        : null;
+      if (!hSnap.exists()) {
+        tx.set(hRef, { handle, userId: user.uid, code: p.referralCode, createdAt: serverTimestamp() });
+      }
       if (old) tx.delete(old);
-      tx.update(userRef, { referralHandle: handle });
+      if (!claimsHandle) tx.update(userRef, { referralHandle: handle });
     });
   } catch (e) {
     if (e && e.message === 'taken') throw new Error('That referral handle was just taken by someone else. Please try another.');
@@ -347,6 +367,48 @@ export async function setReferralHandle(rawHandle) {
     throw new Error('Could not change your referral handle. Please try again.');
   }
   return { ok: true, handle };
+}
+
+/**
+ * Verify — and recreate when missing — the two public lookup docs the
+ * anonymous /ref landing page resolves against:
+ *   referralCodes/{code}          (code-form link and the handle → code hop)
+ *   referralHandles/{handle}      (vanity link, when a handle is set)
+ * Both are owner-creatable under the write-proxy policy. Rows can go missing
+ * when data was written outside this path (the Firestore → Appwrite move),
+ * and nothing else ever repairs them: the profile field still displays a
+ * working link on this page while /ref/<slug> renders "isn't valid".
+ * Best-effort by design — failures are logged, never surfaced.
+ */
+export async function ensureReferralMapping(profileLike) {
+  const user = auth.currentUser;
+  const code = normalizeCode(profileLike && profileLike.referralCode);
+  if (!user || !isValidCode(code)) return { ok: false, skipped: true };
+  const handle = normalizeHandle(profileLike && profileLike.referralHandle);
+  const wantHandle = !!(handle && isValidHandle(handle));
+  try {
+    const [codeSnap, handleSnap] = await Promise.all([
+      getDoc(doc(db, 'referralCodes', code)),
+      wantHandle ? getDoc(doc(db, 'referralHandles', handle)) : Promise.resolve(null)
+    ]);
+    const needCode = !codeSnap.exists();
+    const needHandle = wantHandle && handleSnap && !handleSnap.exists();
+    if (!needCode && !needHandle) return { ok: true };
+    const batch = writeBatch();
+    // Code first: the handle row's create policy reads it (same batch,
+    // getAfter semantics — the bridge validates against post-state).
+    if (needCode) {
+      batch.set(doc(db, 'referralCodes', code), { code, userId: user.uid, createdAt: serverTimestamp() });
+    }
+    if (needHandle) {
+      batch.set(doc(db, 'referralHandles', handle), { handle, userId: user.uid, code, createdAt: serverTimestamp() });
+    }
+    await batch.commit();
+    return { ok: true, repaired: { code: needCode, handle: needHandle } };
+  } catch (e) {
+    console.warn('[referral] mapping self-repair failed:', e && e.code, e && e.message);
+    return { ok: false };
+  }
 }
 
 // ── Referral attribution (finalize) ──────────────────────────────────
@@ -470,7 +532,7 @@ export async function finalizeReferral(rawCode) {
       searchText: `${notifTitle} ${notifBody}`.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 400),
       title: notifTitle,
       body: notifBody,
-      link: 'referral.html',
+      link: 'referral',
       tone: 'green',
       icon: 'users',
       // Pinned to the document id: firestore.rules requires the idempotency

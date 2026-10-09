@@ -147,7 +147,7 @@ export async function sweepHolds(userId = null) {
       const isReferral = String(data.type || '').startsWith('referral');
       await notify(data.userId, {
         type: 'reward_released', tone: 'green', icon: 'unlock',
-        link: isReferral ? 'referral.html' : 'withdraw.html',
+        link: isReferral ? 'referral' : 'withdraw',
         title: isReferral ? 'Referral reward released 🎉' : 'Funds released 🎉',
         body: isReferral
           ? `${npr(data.amountPaisa)} referral reward has left the hold period and is now withdrawable.`
@@ -211,7 +211,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
     // Highest priority in the app: the acceptance is what unlocks the private
     // instructions, and those live in the chat — so deep-link straight to it.
     await notify(asg.userId, {
-      type: 'task_assigned', tone: 'blue', icon: 'briefcase', link: 'chat.html',
+      type: 'task_assigned', tone: 'blue', icon: 'briefcase', link: 'chat',
       priority: 'urgent',
       title: 'Task assigned — open chat',
       body: `“${asg.title}” was accepted for you. Your instructions and further private details are waiting in the chat.`
@@ -228,7 +228,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
     });
     await systemMsg(asg.userId, `⚠️ Clarification needed for “${asg.title}”:\n${cleanReason}`);
     await notify(asg.userId, {
-      type: 'task_rejected', tone: 'amber', icon: 'alert', link: 'chat.html',
+      type: 'task_rejected', tone: 'amber', icon: 'alert', link: 'chat',
       priority: 'high',
       title: 'Clarification needed — reply in chat',
       body: `“${asg.title}”: ${cleanReason}`
@@ -276,7 +276,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
     });
     await systemMsg(asg.userId, `✅ Task approved: “${asg.title}”. ${npr(reward)} was added to your hold balance and becomes withdrawable after the hold period.`);
     await notify(asg.userId, {
-      type: 'reward_hold', tone: 'green', icon: 'coins', link: 'dashboard.html',
+      type: 'reward_hold', tone: 'green', icon: 'coins', link: 'dashboard',
       title: 'Reward approved 🎉',
       body: `${npr(reward)} for “${asg.title}” is on hold and becomes withdrawable after the hold period.`,
       amountPaisa: reward
@@ -319,7 +319,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
     });
     await systemMsg(asg.userId, `❌ Task rejected: “${asg.title}”.\nReason: ${cleanReason}\nNo reward was added for this task.`);
     await notify(asg.userId, {
-      type: 'task_rejected', tone: 'red', icon: 'x', link: 'earn.html',
+      type: 'task_rejected', tone: 'red', icon: 'x', link: 'earn',
       title: 'Task rejected',
       body: `“${asg.title}” was rejected: ${cleanReason}`
     });
@@ -341,7 +341,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
   });
   await systemMsg(asg.userId, `Your request for “${asg.title}” was declined.\nReason: ${cleanReason}`);
   await notify(asg.userId, {
-    type: 'task_request_update', tone: 'gray', icon: 'x', link: 'earn.html',
+    type: 'task_request_update', tone: 'gray', icon: 'x', link: 'earn',
     title: 'Task request declined',
     body: `“${asg.title}”: ${cleanReason}`
   });
@@ -368,7 +368,7 @@ export async function reviewWithdrawal({ withdrawalId, action, reason }) {
     }
     await updateDoc(wRef, { status: action, reviewedAt: serverTimestamp(), reviewedBy: admin.uid, reviewedByName: admin.name });
     await notify(w.userId, {
-      type: 'withdrawal', tone: 'blue', icon: 'bank', link: 'withdraw.html',
+      type: 'withdrawal', tone: 'blue', icon: 'bank', link: 'withdraw',
       title: action === 'processing' ? 'Withdrawal is being processed' : 'Withdrawal under review',
       body: `${npr(amount)} to eSewa ${w.esewaName} is now ${action === 'processing' ? 'being processed' : 'under review'}.`
     });
@@ -417,7 +417,7 @@ export async function reviewWithdrawal({ withdrawalId, action, reason }) {
       tx.delete(lockRef);
     });
     await notify(w.userId, {
-      type: 'withdrawal_completed', tone: 'green', icon: 'check', link: 'transactions.html',
+      type: 'withdrawal_completed', tone: 'green', icon: 'check', link: 'transactions',
       title: 'Withdrawal completed ✅',
       body: `${npr(amount)} has been sent to your eSewa account (${w.esewaName}, +977 ${w.esewaNumber}).`,
       amountPaisa: -amount
@@ -441,7 +441,7 @@ export async function reviewWithdrawal({ withdrawalId, action, reason }) {
       tx.delete(lockRef);
     });
     await notify(w.userId, {
-      type: 'withdrawal_rejected', tone: 'red', icon: 'x', link: 'withdraw.html',
+      type: 'withdrawal_rejected', tone: 'red', icon: 'x', link: 'withdraw',
       title: 'Withdrawal rejected',
       body: `${npr(amount)} was not sent. Reason: ${cleanReason} (Your balance was never debited for this request.)`
     });
@@ -668,7 +668,7 @@ export async function processReferralReward({ admin = null, referredUserId, task
   if (outcome.rewardId && outcome.amountPaisa > 0) {
     if (outcome.isMilestone) {
       await notify(referredBy, {
-        type: 'referral_milestone', tone: 'green', icon: 'users', link: 'referral.html',
+        type: 'referral_milestone', tone: 'green', icon: 'users', link: 'referral',
         title: '🎉 Referral milestone reached',
         body: `Your referral ${outcome.referredName} completed their first ${cfg.milestoneTasks} approved tasks. You earned ${npr(outcome.amountPaisa)}!`,
         amountPaisa: outcome.amountPaisa
@@ -676,7 +676,7 @@ export async function processReferralReward({ admin = null, referredUserId, task
       await systemMsg(referredBy, `🎉 Referral milestone: ${outcome.referredName} completed their first ${cfg.milestoneTasks} approved tasks. ${npr(outcome.amountPaisa)} was added to your referral earnings (on hold per platform rules).`);
     } else {
       await notify(referredBy, {
-        type: 'referral_reward', tone: 'green', icon: 'coins', link: 'referral.html',
+        type: 'referral_reward', tone: 'green', icon: 'coins', link: 'referral',
         title: '💰 Referral reward',
         body: `Your referral ${outcome.referredName} successfully completed another approved task. You earned ${npr(outcome.amountPaisa)}!`,
         amountPaisa: outcome.amountPaisa
@@ -895,7 +895,7 @@ export async function setReferralRewardsSuspended({ referralId, suspended, reaso
     type: suspended ? 'referral_review' : 'system',
     tone: suspended ? 'amber' : 'green',
     icon: suspended ? 'shield' : 'check',
-    link: 'referral.html',
+    link: 'referral',
     title: suspended ? 'Referral rewards under review' : 'Referral rewards restored',
     body: suspended
       ? `Referral rewards for one of your referrals are temporarily paused while we complete a routine review. Your referral link still works. Reason: ${cleanReason}`
@@ -1022,7 +1022,7 @@ export async function applyPenalty({ userId, amountPaisa, reason }) {
   });
 
   await notify(userId, {
-    type: 'penalty', tone: 'red', icon: 'alert', link: 'transactions.html',
+    type: 'penalty', tone: 'red', icon: 'alert', link: 'transactions',
     title: 'Penalty applied',
     body: `A penalty of ${npr(applied)} has been applied to your account.${applied < amount ? ` (Requested ${npr(amount)} — only the available balance could be deducted.)` : ''}\nReason: ${cleanReason}`,
     amountPaisa: -applied
@@ -1063,7 +1063,7 @@ export async function adjustBalance({ userId, amountPaisa, reason }) {
   });
 
   await notify(userId, {
-    type: 'system', tone: applied > 0 ? 'green' : 'red', icon: 'edit', link: 'transactions.html',
+    type: 'system', tone: applied > 0 ? 'green' : 'red', icon: 'edit', link: 'transactions',
     title: 'Balance adjustment',
     body: `An adjustment of ${npr(applied)} was applied to your account.\nReason: ${cleanReason}`,
     amountPaisa: applied
@@ -1107,7 +1107,7 @@ export async function banUser({ userId, action, type, reason, until }) {
   if (action === 'unban') {
     await updateDoc(doc(db, 'users', userId), { status: 'active', ban: null });
     await notify(userId, {
-      type: 'system', tone: 'green', icon: 'check', link: 'dashboard.html',
+      type: 'system', tone: 'green', icon: 'check', link: 'dashboard',
       title: 'Account restored',
       body: 'The restriction on your account has been lifted. Welcome back!'
     });

@@ -4,7 +4,7 @@ import {
   collection, doc, getDoc, query, where, getCountFromServer,
   orderBy, limit, getDocs, getAggregateFromServer, sum
 } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { emptyState } from '../../ui.js';
@@ -19,8 +19,8 @@ content.innerHTML = `
       <p class="sub">Live operations data — all figures come from Firebase.</p>
     </div>
     <div class="page-head-actions">
-      <a class="btn primary" href="/admin/reviews.html">${icon('check')} Review queue</a>
-      <a class="btn ghost" href="/admin/withdrawals.html">${icon('wallet')} Withdrawals</a>
+      <a class="btn primary" href="/admin/reviews">${icon('check')} Review queue</a>
+      <a class="btn ghost" href="/admin/withdrawals">${icon('wallet')} Withdrawals</a>
     </div>
   </div>
 
@@ -47,7 +47,7 @@ content.innerHTML = `
   </div>
 
   <div class="card" style="margin-top:16px">
-    <div class="card-head"><h3>Latest registered users</h3><a href="/admin/users.html" class="small" style="font-weight:600">All users</a></div>
+    <div class="card-head"><h3>Latest registered users</h3><a href="/admin/users" class="small" style="font-weight:600">All users</a></div>
     <div id="latest-users"><div class="state-block loading"><span class="spin dark"></span></div></div>
   </div>`;
 
@@ -232,7 +232,7 @@ charts().catch(() => {});
           <td><div class="cell-strong">${esc(u.fullName || '—')}</div><div class="small muted">${esc(u.email)}</div></td>
           <td class="small muted num">${esc(u.phone || '')}</td>
           <td>${u.status === 'banned' ? '<span class="badge tone-red">Banned</span>' : '<span class="badge tone-green">Active</span>'}</td>
-          <td style="text-align:right"><a class="btn ghost btn-sm" href="/admin/users.html?uid=${esc(d.id)}">Open</a></td>
+          <td style="text-align:right"><a class="btn ghost btn-sm" href="/admin/users?uid=${esc(d.id)}">Open</a></td>
         </tr>`;
       }).join('')}
     </tbody></table></div>`;

@@ -8,15 +8,17 @@
       "**/node_modules/**",
       "functions/**",
       "scripts/**",
-      "README.md",
-      "scan.cjs",
+      "*.md",
+      "*.cjs",
+      "*.key",
+      "*.pem",
+      "*.log",
+      "appwrite.config.json",
       "zz-enc-probe.html",
       "database.rules.json",
       "firestore.rules",
       "firestore.indexes.json",
       "gui-test-screenshots/**",
-      "MIGRATION-REPORT.md",
-      "*.log",
       "ziGoysqu"
     ],
     "cleanUrls": true,
@@ -69,7 +71,7 @@
           },
           {
             "key": "Content-Security-Policy",
-            "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://www.gstatic.com https://cdn.jsdelivr.net 'sha256-Ptdk7Yjy6TMiEjFWiAk0VA/JwyEe7Qrdw9QAgavtD+g=' 'sha256-fzLM2x8dpGnwSf1MGKyH9DemoN0rFC1omNRDIcIRSzU=' 'sha256-tgUs40KIzf5vZtrG+P0ySvg0RponnNo0Ni6MjnRUvv8=' 'sha256-vKufpIIOELBUnyRRaMvnyc2XF+fgiCovpv8EgMrzkpQ=' 'sha256-+jbpt0p8UhkMHPHPvMZAxrzS8xFNzFIkSODXHuYAEA0='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://sgp.cloud.appwrite.io https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://www.gstatic.com https://cdn.jsdelivr.net; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com; manifest-src 'self'; media-src 'self' data: blob:; upgrade-insecure-requests"
+            "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://www.gstatic.com 'sha256-tgUs40KIzf5vZtrG+P0ySvg0RponnNo0Ni6MjnRUvv8=' 'sha256-7bkbyg01U6pjGnmS9H+0TcreI5EPwX3DgSJ91zpFAz8=' 'sha256-vKufpIIOELBUnyRRaMvnyc2XF+fgiCovpv8EgMrzkpQ='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://sgp.cloud.appwrite.io https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://www.gstatic.com; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com; manifest-src 'self'; media-src 'self' data: blob:; upgrade-insecure-requests"
           }
         ]
       },

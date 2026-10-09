@@ -473,9 +473,16 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
 .field { margin-bottom: var(--space-5); }
 .label { display: block; font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--ink-2); margin-bottom: var(--space-2); }
 .label .req { color: var(--red-600); margin-left: 2px; }
+/* `background-color`, never the `background` shorthand: the shorthand also
+   resets background-image/-repeat/-position/-size, and `.select` paints its
+   chevron with those longhands (below). With the shorthand, focusing a select
+   re-applied only the color here, then `.select:focus` restored just the
+   image — so repeat/size/position fell back to `repeat`/`auto`/`0 0` and the
+   chevron tiled across the whole control (visible on every admin filter the
+   moment it was clicked). */
 .input, .select, .textarea {
   width: 100%; font-family: var(--font); font-size: var(--fs-body); color: var(--ink);
-  background: var(--surface); border: 1.5px solid var(--line-2); border-radius: var(--radius-sm);
+  background-color: var(--surface); border: 1.5px solid var(--line-2); border-radius: var(--radius-sm);
   padding: var(--space-3) var(--space-4);
   transition: border-color var(--dur-base) var(--ease-standard), box-shadow var(--dur-base) var(--ease-standard), background .15s var(--ease-standard);
 }
@@ -483,7 +490,7 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
 .input:hover, .select:hover, .textarea:hover { border-color: #B9CCC2; }
 .input:focus, .select:focus, .textarea:focus {
   outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus);
-  background: var(--surface);
+  background-color: var(--surface);
 }
 .input.invalid, .textarea.invalid, .select.invalid,
 .input[aria-invalid="true"], .textarea[aria-invalid="true"], .select[aria-invalid="true"] {
@@ -522,7 +529,7 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
   border: 1.5px solid var(--line-2); border-radius: 6px;
   appearance: none;
   background: var(--surface);
-  transition: all .15s var(--ease-standard);
+  transition: background-color .15s var(--ease-standard), border-color .15s var(--ease-standard), box-shadow .15s var(--ease-standard);
 }
 .checkbox input:checked {
   background: var(--green-600) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/65% no-repeat;
@@ -538,7 +545,7 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
   appearance: none;
   border: 1.5px solid var(--line-2); border-radius: 50%;
   background: var(--surface);
-  transition: all .15s var(--ease-standard);
+  transition: background-color .15s var(--ease-standard), border-color .15s var(--ease-standard);
 }
 .radio input:checked {
   border-color: var(--green-600);
@@ -621,7 +628,7 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
   display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500;
   color: var(--ink-2); background: var(--surface-2); border: 1px solid var(--line);
   padding: 3px 10px; border-radius: 999px;
-  transition: all .15s var(--ease-standard);
+  transition: background-color .15s var(--ease-standard), border-color .15s var(--ease-standard), color .15s var(--ease-standard), transform .15s var(--ease-standard);
 }
 .chip:hover { background: var(--surface); border-color: var(--line-2); color: var(--ink); transform: translateY(-1px); }
 .chip .ic { width: 13px; height: 13px; }
@@ -669,7 +676,7 @@ a:focus-visible:not(.btn):not(.btn-icon):not(.tab):not(.chip):not(.side-link) {
   margin-top: 9px; border: 1px solid var(--line); background: var(--surface-2);
   color: var(--ink); font-weight: 600; font-size: 12.5px; line-height: 1;
   padding: 7px 13px; border-radius: 9px; cursor: pointer;
-  transition: all .15s var(--ease-standard);
+  transition: background-color .15s var(--ease-standard), border-color .15s var(--ease-standard), color .15s var(--ease-standard), transform .15s var(--ease-standard);
 }
 .toast-act:hover { background: var(--green-50); border-color: var(--green-100); color: var(--green-700); transform: translateY(-1px); }
 [data-theme="dark"] .toast-act:hover { background: var(--green-100); color: var(--green-300); }
@@ -766,7 +773,8 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; min-width
 .segmented { display: inline-flex; background: var(--gray-100); border-radius: 10px; padding: 3px; gap: 2px; flex-wrap: wrap; }
 .segmented button {
   border: none; background: transparent; font-family: var(--font); font-size: 13px; font-weight: 600;
-  color: var(--ink-3); padding: 6px 13px; border-radius: 8px; cursor: pointer; transition: all .15s;
+  color: var(--ink-3); padding: 6px 13px; border-radius: 8px; cursor: pointer;
+  transition: background-color .15s, color .15s, box-shadow .15s;
 }
 .segmented button.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-1); }
 

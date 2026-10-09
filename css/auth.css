@@ -28,7 +28,7 @@ body.auth-body { background: var(--bg); }
 }
 .auth-aside .brand-name { font-size: 24px; }
 .auth-aside-mid { position: relative; z-index: 1; margin-top: 40px; }
-.auth-aside h2 { font-size: 30px; letter-spacing: -0.02em; line-height: 1.2; color: #fff; max-width: 400px; }
+.auth-aside h2 { font-size: 30px; letter-spacing: -0.02em; line-height: 1.2; color: #fff; max-width: 400px; text-wrap: balance; }
 .auth-aside .tagline { color: #B9D2C6; font-size: 15.5px; max-width: 380px; margin-top: 10px; }
 .auth-points { list-style: none; margin: 34px 0 0; padding: 0; display: flex; flex-direction: column; gap: 18px; }
 .auth-points li { display: flex; gap: 14px; align-items: flex-start; }
@@ -50,7 +50,7 @@ body.auth-body { background: var(--bg); }
 .auth-card { width: 100%; max-width: 440px; }
 .auth-card .card-pad { padding: 30px; }
 .auth-head { margin-bottom: 24px; }
-.auth-head h1 { font-size: 24px; margin-bottom: 4px; }
+.auth-head h1 { font-size: 24px; margin-bottom: 4px; text-wrap: balance; }
 .auth-head p { color: var(--ink-3); font-size: 14.5px; margin: 0; }
 .auth-switch { text-align: center; font-size: 14px; color: var(--ink-3); margin-top: 22px; }
 

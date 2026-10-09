@@ -260,7 +260,7 @@ export async function syncSubscription({ prompt = false } = {}) {
       notifySelfSecurity('new_device', {
         title: 'New device enabled',
         body: `${describeDevice()} is now set up to receive AfnoKamai notifications. If you do not recognise this device, remove it from notification settings.`,
-        link: 'notification-settings.html',
+        link: 'notification-settings',
         nonce: deviceId()
       }).catch(() => {});
       return 'synced';

@@ -1,7 +1,6 @@
 // ─── Firebase initialisation + shared instances ──────────────────────
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
-// TODO: Remove analytics import if not needed
 import { firebaseConfig, isConfigured } from './firebase-config.js';
 import { ensureAppwriteSession, setBridgeUser } from './appwrite.js';
 
@@ -25,14 +24,8 @@ if (isConfigured()) {
     if (user) ensureAppwriteSession(user);
   });
   // Firestore initialization REMOVED — database layer now uses Appwrite.
-  // Firebase Analytics only runs on https/localhost; load it lazily and never block the app.
-  import('firebase/analytics')
-    .then(async ({ getAnalytics, isSupported }) => {
-      if (await isSupported()) {
-        // Analytics intentionally omitted; keep Hosting behaviour unchanged.
-      }
-    })
-    .catch(() => {});
+  // Firebase Analytics was loaded here but never used; it cost a gstatic
+  // module fetch on every page, so it is gone entirely.
 }
 
 export { app, auth };

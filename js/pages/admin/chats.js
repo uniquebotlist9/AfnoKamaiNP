@@ -2,7 +2,7 @@
 import { db } from '../../firebase.js';
 import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 import { subscribeWhileVisible } from '../../listen.js';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { toast, btnBusy, modal } from '../../ui.js';

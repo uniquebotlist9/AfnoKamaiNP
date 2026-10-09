@@ -3,7 +3,7 @@ import { db } from '../../firebase.js';
 import {
   collection, query, where, orderBy, limit, getDocs, startAfter, doc, getDoc
 } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR, fmtDateTime, fmtRelative } from '../../utils.js';
 import { ASSIGNMENT_STATUS } from '../../utils.js';
 import { icon } from '../../icons.js';
@@ -138,9 +138,9 @@ async function reviewModal(assignmentId) {
         <div class="card card-pad" style="background:var(--surface-2); box-shadow:none; font-size:14px; white-space:pre-wrap; margin-bottom:14px">${esc(a.instructions || '—')}</div>
         ${a.note ? `<h4 style="margin-bottom:6px">User's submission note</h4>
         <div class="card card-pad" style="background:var(--surface-2); box-shadow:none; font-size:14px; white-space:pre-wrap; margin-bottom:8px">${esc(a.note)}</div>` : ''}
-        <a class="btn ghost btn-sm" href="/admin/chats.html?uid=${esc(a.userId)}" target="_blank">${icon('message')} Open chat for evidence</a>
+        <a class="btn ghost btn-sm" href="/admin/chats?uid=${esc(a.userId)}" target="_blank">${icon('message')} Open chat for evidence</a>
         <p class="hint error" id="rv-err" hidden style="margin-top:10px"></p>`,
-      actions: actions.join('') || `<a class="btn ghost" href="/admin/chats.html?uid=${esc(a.userId)}">Open chat</a>`
+      actions: actions.join('') || `<a class="btn ghost" href="/admin/chats?uid=${esc(a.userId)}">Open chat</a>`
     });
     m.root.querySelector('[data-act="cancel"]')?.addEventListener('click', () => m.close());
     const handler = async (action) => {

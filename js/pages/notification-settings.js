@@ -27,7 +27,7 @@ content.innerHTML = `
       <p class="sub">Choose what is pushed to your devices, and manage the devices themselves.</p>
     </div>
     <div class="page-head-actions">
-      <a class="btn ghost btn-sm" href="notifications.html">${icon('bell')} All notifications</a>
+      <a class="btn ghost btn-sm" href="notifications">${icon('bell')} All notifications</a>
     </div>
   </div>
 

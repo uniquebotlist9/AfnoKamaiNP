@@ -26,8 +26,8 @@ content.innerHTML = `
       <p class="sub">Request a task, follow the instructions, submit evidence, and get rewarded after review.</p>
     </div>
     <div class="page-head-actions">
-      <a class="btn ghost" href="chat.html">${icon('message')} Chat with admin</a>
-      <a class="btn subtle" href="rules.html">${icon('scroll')} Task rules</a>
+      <a class="btn ghost" href="chat">${icon('message')} Chat with admin</a>
+      <a class="btn subtle" href="rules">${icon('scroll')} Task rules</a>
     </div>
   </div>
 
@@ -238,7 +238,7 @@ function renderAssignment(id, a) {
       </div>
       <div class="as-actions">
         ${action}
-        <a class="btn ${a.status === 'requested' ? 'primary' : 'ghost'} btn-sm" href="chat.html">${icon('message')} ${a.status === 'requested' ? 'Chat with admin' : 'Chat'}</a>
+        <a class="btn ${a.status === 'requested' ? 'primary' : 'ghost'} btn-sm" href="chat">${icon('message')} ${a.status === 'requested' ? 'Chat with admin' : 'Chat'}</a>
       </div>
     </div>`;
 }
@@ -266,7 +266,7 @@ async function submitFlow(assignmentId) {
       <div class="field">
         <label class="label">Evidence description <span class="req">*</span></label>
         <input class="input" id="sub-evidence" maxlength="1000" placeholder="e.g. Screenshot sent in chat showing the completed form">
-        <p class="hint">Attach the actual screenshot/image in the <a href="chat.html">chat</a> — reviewers check it against your description.</p>
+        <p class="hint">Attach the actual screenshot/image in the <a href="chat">chat</a> — reviewers check it against your description.</p>
       </div>` : ''}`,
     actions: `
       <button class="btn ghost" data-act="cancel">Cancel</button>
@@ -438,7 +438,7 @@ async function doRequest(taskId, btn) {
     // failure here must never cost them the chat they just earned.
     await new Promise((r) => setTimeout(r, 700));
     try { await promptPushOnRequest(); } catch (_) { /* straight to chat */ }
-    location.href = 'chat.html';
+    location.href = 'chat';
   } catch (err) {
     toast(err.message, { type: 'error', title: 'Could not request task' });
     btnBusy(btn, false);

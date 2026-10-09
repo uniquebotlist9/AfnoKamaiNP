@@ -13,10 +13,10 @@ import {
 // exhausted backend. onSnapshot is untouched: it is a stream, not a promise.
 const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(...a));
 const writeBatch = (...a) => boundBatch(fsWriteBatch(...a));
-import { requireAppAccess, doLogout, ensureConfigured, redirectSignal, isRedirect, stopSignal } from './guard.js';
+import { requireAppAccess, doLogout, ensureConfigured, redirectSignal, isRedirect, stopSignal, readActiveProfile } from './guard.js';
 import { icon, logo } from './icons.js';
 import { esc, fmtRelative, initials } from './utils.js';
-import { initOfflineBanner, emptyState, renderMountFailure, modal, toast, withDeadline, boundBatch, WRITE_DEADLINE_MS } from './ui.js';
+import { initOfflineBanner, emptyState, renderMountFailure, modal, toast, withDeadline, boundBatch, armMountWatch, WRITE_DEADLINE_MS } from './ui.js';
 import { subscribeWhileVisible } from './listen.js';
 import { initTheme, mountThemeControl } from './theme.js';
 import { initInstallPopup } from './install-popup.js';
@@ -39,7 +39,7 @@ const MOBILE_PRIMARY = ['dashboard', 'earn', 'withdraw'];
 
 function navLink(id, current, badgeId) {
   const p = PAGES[id];
-  const href = `${id}.html`;
+  const href = `${id}`;
   return `
     <a class="side-link ${current === id ? 'active' : ''}" href="${href}" ${current === id ? 'aria-current="page"' : ''}>
       ${icon(p.icon)}<span>${esc(p.title)}</span>
@@ -56,25 +56,38 @@ let installEvent = null;
 export async function mountShell(pageId) {
   if (!ensureConfigured()) throw redirectSignal();
   initTheme();
-  let access;
-  try {
-    access = await requireAppAccess();
-  } catch (e) {
-    // 'redirect' means we are already navigating away — stay quiet.
-    if (isRedirect(e)) throw e;
-    renderMountFailure('Could not load your session', 'Check your connection and try again.');
-    // The friendly screen is up; stop this page silently instead of
-    // surfacing a module-level error behind it.
-    throw stopSignal();
-  }
-  const { user, profile } = access;
+
+  const gate = async () => {
+    try {
+      return await requireAppAccess();
+    } catch (e) {
+      // 'redirect' means we are already navigating away — stay quiet.
+      if (isRedirect(e)) throw e;
+      renderMountFailure('Could not load your session', 'Check your connection and try again.');
+      // The friendly screen is up; stop this page silently instead of
+      // surfacing a module-level error behind it.
+      throw stopSignal();
+    }
+  };
+
+  // PAINT FIRST, GATE RIGHT AFTER. The gate waits for Firebase Auth's first
+  // emission, which performs an accounts:lookup round-trip — waiting for it
+  // behind the inline splash is what flashed a loading screen on every
+  // section switch. The chrome needs only fullName/email, which the local
+  // profile mirror carries, so the shell goes on screen immediately and the
+  // real gate runs right after: an ended session or a pending chain step
+  // (verify-email / setup) then redirects from a painted shell instead of a
+  // splash. First run — no mirror — keeps the original blocking path.
+  let access = null;
+  let profile = readActiveProfile();
+  if (!profile) { access = await gate(); profile = access.profile; }
 
   const layout = document.createElement('div');
   layout.className = 'app-layout';
   layout.innerHTML = `
     <a class="skip-link" href="#page-content">Skip to main content</a>
     <aside class="sidebar" id="sidebar">
-      <a class="brand" href="dashboard.html">${logo({ light: true })}</a>
+      <a class="brand" href="dashboard">${logo({ light: true })}</a>
       <div class="side-label">Main</div>
       <nav class="side-nav" aria-label="Main">
         ${navLink('dashboard', pageId)}
@@ -123,12 +136,24 @@ export async function mountShell(pageId) {
     </div>
     <nav class="mobile-nav" aria-label="Quick navigation">
       ${MOBILE_PRIMARY.map((id) => `
-        <a href="${id}.html" class="${pageId === id ? 'active' : ''}">
+        <a href="${id}" class="${pageId === id ? 'active' : ''}">
           ${icon(PAGES[id].icon)}<span>${esc(PAGES[id].title)}</span>
         </a>`).join('')}
       <button id="more-btn">${icon('menu')}<span>More</span></button>
     </nav>`;
   document.body.appendChild(layout);
+  // The inline splash has done its job: the shell (with its skeleton) is on
+  // screen now, so retire it and start the silent-hang watchdog.
+  document.getElementById('ak-splash')?.remove();
+  armMountWatch();
+
+  // Shell is on screen — finish the real gate here, where the slow part
+  // (Firebase Auth's accounts:lookup) no longer hides behind the splash.
+  if (!access) {
+    access = await gate();
+    profile = access.profile;
+  }
+  const { user } = access;
 
   const content = layout.querySelector('#page-content');
 
@@ -175,9 +200,9 @@ export async function mountShell(pageId) {
       <div style="padding:8px 12px 4px" id="um-theme"></div>
       <button id="um-logout" class="danger">${icon('logout')} Log out</button>`;
     layout.querySelector('.topbar-actions').appendChild(menu);
-    menu.querySelector('#um-profile').addEventListener('click', () => { location.href = 'profile.html'; });
-    menu.querySelector('#um-referral').addEventListener('click', () => { location.href = 'referral.html'; });
-    menu.querySelector('#um-support').addEventListener('click', () => { location.href = 'support.html'; });
+    menu.querySelector('#um-profile').addEventListener('click', () => { location.href = 'profile'; });
+    menu.querySelector('#um-referral').addEventListener('click', () => { location.href = 'referral'; });
+    menu.querySelector('#um-support').addEventListener('click', () => { location.href = 'support'; });
     menu.querySelector('#um-logout').addEventListener('click', () => doLogout());
     mountThemeControl(menu.querySelector('#um-theme'));
     const installBtn = menu.querySelector('#um-install');
@@ -206,6 +231,7 @@ export async function mountShell(pageId) {
   registerSW();
   initInstallPopup();
   initPushBridge();
+  initNavPrefetch();
 
   // Every app page shows the restriction screen for banned accounts. It used
   // to be wired per page, so chat/notifications/transactions/rules/support
@@ -238,7 +264,9 @@ function rememberPopup(set, id) {
 }
 
 function onChatPage() {
-  return /(^|\/)(chat|chats)\.html/i.test(location.pathname);
+  // Clean URLs: the live pathname is `/chat` (the `.html` form only exists
+  // for one redirect hop), so the check must accept both.
+  return /(^|\/)(chat|chats)(\.html)?$/i.test(location.pathname);
 }
 
 // ── Browser tab title indicator ──
@@ -275,8 +303,8 @@ function showPriorityPopup(n) {
         </div>
       </div>`,
     actions: `
-      <a class="btn ghost" href="earn.html">View my tasks</a>
-      <a class="btn primary" href="chat.html">${icon('message')} Open chat</a>`
+      <a class="btn ghost" href="earn">View my tasks</a>
+      <a class="btn primary" href="chat">${icon('message')} Open chat</a>`
   });
   const openChat = m.root.querySelector('.modal-foot .btn.primary');
   if (openChat) openChat.addEventListener('click', () => markNotificationRead(n.id));
@@ -297,7 +325,7 @@ function showAdminMessageToast(n) {
     duration: 7000,
     action: {
       label: 'Open chat',
-      onClick: () => { markNotificationRead(n.id); location.href = 'chat.html'; }
+      onClick: () => { markNotificationRead(n.id); location.href = 'chat'; }
     }
   });
   return true;
@@ -373,7 +401,7 @@ function setupNotifications(layout, uid) {
 
   const bell = layout.querySelector('#notif-bell');
   bell.addEventListener('click', () => {
-    location.href = 'notifications.html';
+    location.href = 'notifications';
   });
 }
 
@@ -422,7 +450,7 @@ async function watchMaintenance(profile) {
       localStorage.setItem('ak_maint_checked_at', String(Date.now()));
       const snap = await getDoc(doc(db, 'config', 'maintenance'));
       const m = snap.data();
-      if (m && m.enabled) location.replace('maintenance.html');
+      if (m && m.enabled) location.replace('maintenance');
     } catch (_) {
       // Config row missing — maintenance mode is effectively off.
       // No-op: the admin can enable it later and users will see it on refresh.
@@ -434,9 +462,29 @@ async function watchMaintenance(profile) {
   });
 }
 
+/**
+ * Warm a nav link's target the moment the pointer touches it (or the tap
+ * starts), so switching sections is a direct swap instead of click →
+ * round-trip → splash. The response lands in the HTTP cache and, through
+ * the service worker's asset branch, the SW page cache — the switch then
+ * answers from cache. One shot per link per page load.
+ */
+function initNavPrefetch() {
+  const seen = new Set();
+  const warm = (a) => {
+    if (!a || a.origin !== location.origin) return;
+    if (seen.has(a.href) || a.href === location.href) return;
+    seen.add(a.href);
+    fetch(a.href, { credentials: 'same-origin' }).catch(() => {});
+  };
+  const on = (e) => { const a = e.target.closest && e.target.closest('a[href]'); if (a) warm(a); };
+  document.addEventListener('pointerover', on, { passive: true });
+  document.addEventListener('pointerdown', on, { passive: true });
+}
+
 function registerSW() {
   if ('serviceWorker' in navigator && !['localhost', '127.0.0.1'].includes(location.hostname)) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
   }
 }
 

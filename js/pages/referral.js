@@ -14,8 +14,8 @@ import { icon } from '../icons.js';
 import { emptyState, errorState, skeletonRows, badge, toast, btnBusy, modal } from '../ui.js';
 import {
   fetchReferralConfig, referralLink, copyText, claimReferralIdentity,
-  setReferralHandle, finalizeReferral, readPendingCode, referralMemberStatus,
-  isValidHandle, normalizeHandle
+  setReferralHandle, ensureReferralMapping, finalizeReferral, readPendingCode,
+  referralMemberStatus, isValidHandle, normalizeHandle
 } from '../referral.js';
 
 let { user, profile, content } = await mountShell('referral');
@@ -686,6 +686,13 @@ async function boot() {
   renderInviteCard();
   renderRulesCard();
   renderFinalizeBanner().catch(() => {});
+  // Silent self-repair: this page displays the link from the profile
+  // fields, but /ref/<slug> resolves two public lookup docs. If either
+  // row is missing (e.g. lost during the Firestore → Appwrite move),
+  // visitors saw "This referral link isn't valid" while this page showed
+  // a working vanity link. Fire-and-forget; only writes when a row is
+  // actually missing, and never disturbs the page.
+  ensureReferralMapping(profile).catch(() => {});
   await Promise.allSettled([
     loadStats(),
     loadMembersPage(true),

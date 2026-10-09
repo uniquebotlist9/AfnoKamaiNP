@@ -4,14 +4,15 @@ import { auth, db, isConfigured } from './firebase.js';
 import {
   onAuthStateChanged, signOut
 } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, Timestamp } from 'firebase/firestore';
 import { esc } from './utils.js';
 import { logo } from './icons.js';
+import { renderMountFailure } from './ui.js';
 
 
 /**
  * Root-absolute route. Every redirect used to be a page-relative string, which
- * meant admin pages (`/admin/…`) resolved `login.html` to `/admin/login.html`
+ * meant admin pages (`/admin/…`) resolved `login` to `/admin/login`
  * — a 404. Anchoring to the site root makes the chain work from any depth.
  */
 const R = (page) => `/${page}`;
@@ -75,11 +76,28 @@ export function isStop(e) {
 //     UNCAUGHT EXCEPTION, so preventDefault() on 'unhandledrejection' alone
 //     leaves a red console error behind. Caught here too.
 window.addEventListener('unhandledrejection', (ev) => {
-  if (isRedirect(ev.reason) || isRestricted(ev.reason) || isStop(ev.reason)) ev.preventDefault();
+  if (isRedirect(ev.reason) || isRestricted(ev.reason) || isStop(ev.reason)) { ev.preventDefault(); return; }
+  recoverIfNeverRendered();
 });
 window.addEventListener('error', (ev) => {
-  if (isRedirect(ev.error) || isRestricted(ev.error) || isStop(ev.error)) ev.preventDefault();
+  if (isRedirect(ev.error) || isRestricted(ev.error) || isStop(ev.error)) { ev.preventDefault(); return; }
+  recoverIfNeverRendered();
 });
+
+/**
+ * If an uncaught failure lands while the page is still on its loading screen
+ * (the inline splash or the shell skeleton), the module graph is broken and
+ * nothing will ever render on its own — swap in the friendly retry screen
+ * instead of leaving the spinner up forever. Errors that arrive AFTER content
+ * rendered are left alone: the console already reports those.
+ */
+function recoverIfNeverRendered() {
+  try {
+    if (document.getElementById('ak-splash') || document.getElementById('page-skeleton')) {
+      renderMountFailure();
+    }
+  } catch (_) { /* never mask the original error */ }
+}
 
 export function onAuth(cb) {
   if (!isConfigured()) { cb(null); return () => {}; }
@@ -92,31 +110,118 @@ export function waitForAuth() {
 
 export async function fetchProfile(uid) {
   const snap = await getDoc(doc(db, 'users', uid));
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  const profile = snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  // Mirror the result so the NEXT navigation can paint the shell without a
+  // round-trip (see requireAppAccess). Stale-while-revalidate: a read that
+  // succeeds refreshes the mirror, a missing doc clears it, a failed read
+  // (offline) throws before touching it and the cached copy survives.
+  if (profile) writeCachedProfile(uid, profile);
+  else clearCachedProfile(uid);
+  return profile;
+}
+
+// ── Profile mirror: instant page switches ─────────────────────────────
+// requireAppAccess() gates EVERY navigation, and it used to await a network
+// profile read before the shell could paint — so on a slow connection every
+// section switch waited a full round-trip behind the splash. The profile of
+// the signed-in user is mirrored to localStorage instead: paints happen from
+// cache in ~0ms and a background read keeps it honest (one navigation behind
+// at most; real security is enforced server-side by the document rules).
+// Timestamps are class instances whose methods JSON drops, so they are
+// written with an explicit marker and revived on read.
+const PROFILE_PREFIX = 'ak_profile_';
+const profileKey = (uid) => PROFILE_PREFIX + uid;
+
+// Timestamp defines toJSON(), which JSON.stringify applies BEFORE any
+// replacer sees the value — so instances would silently degrade to plain
+// ISO strings in the mirror and lose their methods (createdAt.toMillis()
+// etc.). Pre-walk instead: emit {__ts} markers here, revive them on read,
+// and the mirror stays type-identical to a live read.
+function toCacheShape(v) {
+  if (v instanceof Timestamp) return { __ts: v.toMillis() };
+  if (Array.isArray(v)) return v.map(toCacheShape);
+  if (v && typeof v === 'object' && v.constructor === Object) {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = toCacheShape(v[k]);
+    return out;
+  }
+  return v;
+}
+
+function writeCachedProfile(uid, profile) {
+  try {
+    localStorage.setItem(profileKey(uid), JSON.stringify(toCacheShape(profile)));
+    localStorage.setItem(ACTIVE_UID_KEY, uid);
+  } catch (_) { /* quota / private mode — switches just fall back to network */ }
+}
+
+function clearCachedProfile(uid) {
+  try { localStorage.removeItem(profileKey(uid)); } catch (_) {}
+}
+
+function readCachedProfile(uid) {
+  try {
+    const raw = localStorage.getItem(profileKey(uid));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw, (k, v) =>
+      v && typeof v === 'object' && typeof v.__ts === 'number' && Object.keys(v).length === 1
+        ? Timestamp.fromMillis(v.__ts) : v);
+    return parsed && typeof parsed === 'object' && parsed.id ? parsed : null;
+  } catch (_) { return null; }
+}
+
+// Which uid's mirror is the live one. Named with the ak_profile_ prefix so
+// doLogout's sweep clears marker and mirrors together.
+const ACTIVE_UID_KEY = 'ak_profile_uid';
+
+/**
+ * The last signed-in account's profile, read synchronously. Shells use this
+ * to paint their chrome immediately instead of waiting out Firebase Auth's
+ * first emission (an accounts:lookup round-trip that used to hold the splash
+ * on screen through every section switch); the real gate still runs right
+ * after paint. Null on first run — callers fall back to the blocking path.
+ */
+export function readActiveProfile() {
+  try {
+    const uid = localStorage.getItem(ACTIVE_UID_KEY);
+    return uid ? readCachedProfile(uid) : null;
+  } catch (_) { return null; }
+}
+
+/** Background refresh; fetchProfile itself updates/clears the mirror. */
+function revalidateProfile(uid) {
+  fetchProfile(uid).catch(() => { /* offline: keep the copy; retried next switch */ });
+}
+
+/** Cache-first read for boot-time routing (landing / login bounce). */
+async function loadProfileSmart(uid) {
+  const cached = readCachedProfile(uid);
+  if (cached) { revalidateProfile(uid); return cached; }
+  return fetchProfile(uid);
 }
 
 /** Decide where an authenticated user belongs in the registration chain. */
 export function destinationFor(user, profile) {
-  if (!user) return R('login.html');
+  if (!user) return R('login');
   // Check Appwrite user document's emailVerified first (programmatically settable),
   // fall back to Firebase Auth's emailVerified.
   const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
   const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
   const emailVerifiedFromFirebase = user.emailVerified;
-  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) return R('verify-email.html');
-  if (!profile) return R('profile-setup.html');
-  if (!profile.profileComplete) return R('profile-setup.html');
-  if (!profile.pinSetAt) return R('profile-setup.html#pin');
-  return R('dashboard.html');
+  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) return R('verify-email');
+  if (!profile) return R('profile-setup');
+  if (!profile.profileComplete) return R('profile-setup');
+  if (!profile.pinSetAt) return R('profile-setup#pin');
+  return R('dashboard');
 }
 
 /** For index.html: route whichever way the visitor belongs. */
 export async function routeOnBoot({ onStage = () => {} } = {}) {
   onStage('Checking your session…');
   const user = await waitForAuth();
-  if (!user) { location.replace(R('login.html')); return; }
+  if (!user) { location.replace(R('login')); return; }
   onStage('Loading your account…');
-  const profile = await fetchProfile(user.uid);
+  const profile = await loadProfileSmart(user.uid);
   location.replace(destinationFor(user, profile));
 }
 
@@ -125,7 +230,7 @@ export async function redirectIfAuthed() {
   const user = await waitForAuth();
   if (!user) return null;
   try {
-    const profile = await fetchProfile(user.uid);
+    const profile = await loadProfileSmart(user.uid);
     location.replace(destinationFor(user, profile));
   } catch (_) {
     // Profile read failed (usually an offline blip right after sign-in).
@@ -162,23 +267,31 @@ async function retryDeferredReferral() {
  */
 export async function requireAppAccess() {
   const user = await waitForAuth();
-  if (!user) { location.replace(R('login.html')); throw redirectSignal(); }
+  if (!user) { location.replace(R('login')); throw redirectSignal(); }
 
-  let profile = await fetchProfile(user.uid);
-  if (!profile) {
-    // Auth user exists but Appwrite doc missing (interrupted signup) → heal.
-    const { ensureUserDocs } = await import('./api.js');
-    await ensureUserDocs(user).catch(() => { /* retried on next load */ });
+  let profile = readCachedProfile(user.uid);
+  if (profile) {
+    // Paint from the mirror — no network on the critical path, so switching
+    // sections is instant even on a slow connection. The background read
+    // corrects any drift before the next navigation.
+    revalidateProfile(user.uid);
+  } else {
     profile = await fetchProfile(user.uid);
+    if (!profile) {
+      // Auth user exists but Appwrite doc missing (interrupted signup) → heal.
+      const { ensureUserDocs } = await import('./api.js');
+      await ensureUserDocs(user).catch(() => { /* retried on next load */ });
+      profile = await fetchProfile(user.uid);
+    }
   }
   // Check Appwrite user document's emailVerified first (programmatically settable),
   // fall back to Firebase Auth's emailVerified.
   const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
   const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
   const emailVerifiedFromFirebase = user.emailVerified;
-  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) { location.replace(R('verify-email.html')); throw redirectSignal(); }
+  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) { location.replace(R('verify-email')); throw redirectSignal(); }
   if (!profile || !profile.profileComplete || !profile.pinSetAt) {
-    location.replace(R('profile-setup.html')); throw redirectSignal();
+    location.replace(R('profile-setup')); throw redirectSignal();
   }
   retryDeferredReferral();
   return { user, profile };
@@ -190,7 +303,7 @@ export async function requireAdminAccess() {
   const token = await user.getIdTokenResult();
   const isAdmin = token.claims && token.claims.admin === true;
   if (!isAdmin || profile.role !== 'admin') {
-    location.replace(R('index.html'));
+    location.replace('/');
     throw redirectSignal();
   }
   return { user, profile };
@@ -219,11 +332,17 @@ export async function doLogout() {
   try { sessionStorage.clear(); } catch (_) {}
   try {
     for (const key of ACCOUNT_SCOPED_KEYS) localStorage.removeItem(key);
+    // Profile mirrors are uid-suffixed — sweep them by prefix so a shared
+    // machine never hands the next person the previous user's account data.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(PROFILE_PREFIX)) localStorage.removeItem(key);
+    }
   } catch (_) { /* private mode / storage disabled */ }
   await signOut(auth);
   // Root-absolute: this is called from /admin/* as well, where a relative
-  // "login.html" would 404 on /admin/login.html.
-  location.replace(R('login.html'));
+  // "login" would 404 on /admin/login.
+  location.replace(R('login'));
 }
 
 /** Guard for pages where Firebase has not been configured yet. */

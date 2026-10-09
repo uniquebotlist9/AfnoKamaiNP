@@ -3,7 +3,7 @@ import { db } from '../../firebase.js';
 import {
   collection, query, where, orderBy, limit, getDocs, doc, getDoc, startAfter
 } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtNPR, fmtDateTime, fmtRelative } from '../../utils.js';
 import { WITHDRAWAL_STATUS } from '../../utils.js';
 import { icon } from '../../icons.js';
@@ -104,7 +104,7 @@ async function load(reset, run) {
       return `<tr>
         <td class="small num">${esc(fmtDateTime(w.requestedAt))}</td>
         <td><div class="cell-strong">${esc(w.userName || '—')}</div>
-          <a class="small" href="/admin/users.html?uid=${esc(w.userId)}">${esc(w.userEmail || '')}</a></td>
+          <a class="small" href="/admin/users?uid=${esc(w.userId)}">${esc(w.userEmail || '')}</a></td>
         <td class="cell-strong num">${esc(fmtNPR(w.amountPaisa))}</td>
         <td><div>${esc(w.esewaName)}</div><div class="small muted num">+977 ${esc(w.esewaNumber)}</div></td>
         <td>${badge(st.label, st.tone, { dot: true })}${w.reason ? `<div class="small muted" style="margin-top:4px; max-width:180px">${esc(w.reason)}</div>` : ''}</td>

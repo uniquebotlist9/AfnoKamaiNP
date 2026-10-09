@@ -71,7 +71,7 @@ content.innerHTML = `
       <p class="sub">Read these carefully before requesting tasks — they keep the platform fair and safe for everyone.</p>
     </div>
     <div class="page-head-actions">
-      <a class="btn ghost" href="support.html">${icon('lifebuoy')} Ask support</a>
+      <a class="btn ghost" href="support">${icon('lifebuoy')} Ask support</a>
     </div>
   </div>
   <div id="rules-container">${skeletonRows(3, 90)}</div>
@@ -81,7 +81,7 @@ content.innerHTML = `
   </div>
   <div class="withdraw-note" style="margin-top:14px">
     ${icon('info')}
-    <span>Unsure whether something is allowed? Open <a href="support.html">Support</a> and ask <strong>before</strong> submitting your work — clarifying first protects your rewards.</span>
+    <span>Unsure whether something is allowed? Open <a href="support">Support</a> and ask <strong>before</strong> submitting your work — clarifying first protects your rewards.</span>
   </div>`;
 
 (async () => {

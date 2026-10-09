@@ -94,7 +94,7 @@ content.innerHTML = `
     </div>
     <div class="page-head-actions">
       <span class="badge tone-green" id="unread-pill" hidden></span>
-      <a class="btn ghost btn-sm" href="notification-settings.html">${icon('settings')} Settings</a>
+      <a class="btn ghost btn-sm" href="notification-settings">${icon('settings')} Settings</a>
       <button class="btn ghost btn-sm" id="mark-all">${icon('check')} Mark all read</button>
     </div>
   </div>

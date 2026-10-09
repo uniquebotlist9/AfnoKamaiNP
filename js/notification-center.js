@@ -69,7 +69,7 @@ function buildQuery(uid, tab) {
 
 function renderTabs(unread) {
   // Class names deliberately differ from the full page's `.notif-tabs`:
-  // both live on `notifications.html` at once, and a shared selector would
+  // both live on `notifications` at once, and a shared selector would
   // let one panel's styles leak into the other.
   return `
     <div class="notif-chips" role="tablist" aria-label="Notification categories">
@@ -91,7 +91,7 @@ function renderItem(d) {
     ? `<span class="notif-amt">${esc(fmtPaisa(n.amountPaisa))}</span>` : '';
 
   return `
-    <a class="activity-item${n.read ? '' : ' is-unread'}" href="${esc(safeHref(n.link, 'notifications.html'))}"
+    <a class="activity-item${n.read ? '' : ' is-unread'}" href="${esc(safeHref(n.link, 'notifications'))}"
        data-notif-id="${esc(d.id)}" style="padding:12px 14px">
       <span class="act-ic ${esc(n.tone || 'gray')}">${icon(n.icon || (cat ? cat.icon : 'info'))}</span>
       <div class="act-body">
@@ -123,7 +123,7 @@ function permissionCard() {
       <span class="push-card-ic">${icon('bell')}</span>
       <div><strong>Device notifications on</strong>
         <div class="push-card-sub">Alerts arrive even when AfnoKamai is closed.</div></div>
-      <a class="btn btn-ghost btn-sm" href="notification-settings.html">Manage</a>
+      <a class="btn btn-ghost btn-sm" href="notification-settings">Manage</a>
     </div>`;
   }
 
@@ -134,7 +134,7 @@ function permissionCard() {
       <span class="push-card-ic">${icon('ban')}</span>
       <div><strong>Device notifications are blocked</strong>
         <div class="push-card-sub">Allow notifications for this site in your browser's address bar, then reload.</div></div>
-      <a class="btn btn-ghost btn-sm" href="notification-settings.html">Help</a>
+      <a class="btn btn-ghost btn-sm" href="notification-settings">Help</a>
     </div>`;
   }
 
@@ -227,8 +227,8 @@ export async function openNotificationPanel({ wrap, uid }) {
     <div class="notif-tabs-slot"></div>
     <div class="notif-pop-list"><div class="state-block loading"><span class="spin dark"></span></div></div>
     <div class="notif-pop-foot">
-      <a href="notifications.html" style="font-weight:600; font-size:13.5px">View all notifications</a>
-      <a href="notification-settings.html" style="font-size:13.5px">Settings</a>
+      <a href="notifications" style="font-weight:600; font-size:13.5px">View all notifications</a>
+      <a href="notification-settings" style="font-size:13.5px">Settings</a>
     </div>`;
   wrap.appendChild(pop);
 

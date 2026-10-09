@@ -37,7 +37,7 @@ function readCodeFromUrl() {
 }
 
 function signupUrl(code) {
-  return code ? `/signup.html?ref=${encodeURIComponent(code)}` : '/signup.html';
+  return code ? `/signup?ref=${encodeURIComponent(code)}` : '/signup';
 }
 
 function renderGeneric(message) {
@@ -49,7 +49,7 @@ function renderGeneric(message) {
     ${message ? `<p class="hint" style="margin-bottom:14px">${message}</p>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
       <a class="btn btn-primary btn-lg" href="${signupUrl('')}">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
+      <a class="btn ghost btn-lg" href="/login">${icon('logout')} Login</a>
     </div>
     <p class="hint" style="margin-top:16px">AfnoKamai does not promise income. Rewards depend on completing and getting tasks approved — follow all platform and third-party rules.</p>`;
 }
@@ -61,8 +61,8 @@ function renderInvalid() {
       <p>The referral code could not be found or has expired. You can still join AfnoKamai — just without a referral code.</p>
     </div>
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
-      <a class="btn btn-primary btn-lg" href="/signup.html">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
+      <a class="btn btn-primary btn-lg" href="/signup">${icon('user')} Create Account</a>
+      <a class="btn ghost btn-lg" href="/login">${icon('logout')} Login</a>
     </div>`;
 }
 
@@ -83,7 +83,7 @@ function renderValid(code, meta) {
     ${meta && meta.handle ? `<p class="hint" style="margin-bottom:12px">Invited through <strong>afnokamainp.web.app/ref/${esc(meta.handle)}</strong></p>` : ''}
     <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
       <a class="btn btn-primary btn-lg" href="${signupUrl(code)}">${icon('user')} Create Account</a>
-      <a class="btn ghost btn-lg" href="/login.html">${icon('logout')} Login</a>
+      <a class="btn ghost btn-lg" href="/login">${icon('logout')} Login</a>
     </div>
     <p class="hint" style="margin-top:16px">When someone joins using your link and completes approved tasks, the inviter earns referral rewards — starting with रु15 after the new member's first 2 approved tasks, then रु5 for each approved task after that.</p>`;
   const btn = body.querySelector('#ref-copy-code');
@@ -114,8 +114,8 @@ async function boot() {
         <p>Referral invitations apply to new AfnoKamai accounts. Your current account keeps its existing referral status — nothing changes by opening this link.</p>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:6px">
-        <a class="btn btn-primary btn-lg" href="/dashboard.html">${icon('dashboard')} Go to Dashboard</a>
-        <a class="btn ghost btn-lg" href="/referral.html">${icon('link')} My referrals</a>
+        <a class="btn btn-primary btn-lg" href="/dashboard">${icon('dashboard')} Go to Dashboard</a>
+        <a class="btn ghost btn-lg" href="/referral">${icon('link')} My referrals</a>
       </div>`;
     return;
   }

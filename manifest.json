@@ -2,7 +2,7 @@
   "name": "AfnoKamai",
   "short_name": "AfnoKamai",
   "description": "Your Work. Your Kamai. Complete approved digital tasks and earn NPR rewards.",
-  "start_url": "/index.html",
+  "start_url": "/",
   "display": "standalone",
   "background_color": "#F4F7F5",
   "theme_color": "#0E5C41",

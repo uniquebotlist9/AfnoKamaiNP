@@ -7,7 +7,7 @@ import { doc, getDoc, serverTimestamp, setDoc as fsSetDoc } from 'firebase/fires
 // awaiting it — indefinitely. Shadowed here rather than at each call site so
 // no write can be forgotten.
 const setDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsSetDoc(...a));
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtDateTime } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { confirmDialog, btnBusy, toast, badge, withDeadline, WRITE_DEADLINE_MS } from '../../ui.js';
@@ -70,7 +70,7 @@ content.innerHTML = `
 
 content.querySelector('#maint-icon').innerHTML = icon('wrench');
 
-// Mirrors maintenance.html: one paragraph per line, **bold** / *italic*
+// Mirrors maintenance: one paragraph per line, **bold** / *italic*
 // honoured, HTML escaped first. The preview must match the user-facing page.
 const inlineMd = (s) => esc(s)
   .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')

@@ -7,7 +7,7 @@ import { doc, getDoc, serverTimestamp, setDoc as fsSetDoc } from 'firebase/fires
 // awaiting it — indefinitely. Shadowed here rather than at each call site so
 // no write can be forgotten.
 const setDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsSetDoc(...a));
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, toPaisa, fmtNPR } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { btnBusy, toast, badge, confirmDialog, withDeadline, WRITE_DEADLINE_MS } from '../../ui.js';

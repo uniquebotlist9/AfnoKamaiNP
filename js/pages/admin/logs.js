@@ -1,7 +1,7 @@
 // ─── Admin: immutable audit log ──────────────────────────────────────
 import { db } from '../../firebase.js';
 import { collection, query, orderBy, limit, getDocs, startAfter } from 'firebase/firestore';
-import { mountAdminShell } from '../../admin-shell.js?v=4';
+import { mountAdminShell } from '../../admin-shell.js?v=5';
 import { esc, fmtDateTime } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { emptyState, skeletonRows, autoPager } from '../../ui.js';

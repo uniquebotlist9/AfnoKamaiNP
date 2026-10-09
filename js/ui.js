@@ -329,6 +329,21 @@ export function renderMountFailure(title = 'Could not load this page', message =
   if (btn) btn.addEventListener('click', () => location.reload());
 }
 
+/**
+ * Safety net for silent hangs: if the shell mounted but the page module never
+ * replaced the skeleton (a data fetch that never settles, a render that threw
+ * without reaching the global error handlers), show the retry screen instead
+ * of leaving gray rows on screen forever. The check is a no-op once the
+ * skeleton is gone, so pages that render quickly are never touched.
+ */
+export function armMountWatch(delayMs = 12000) {
+  setTimeout(() => {
+    if (document.getElementById('page-skeleton')) {
+      renderMountFailure('This is taking longer than usual', 'The page could not finish loading. Check your connection and try again.');
+    }
+  }, delayMs);
+}
+
 // ── Badges ──
 export function badge(text, tone = 'gray', { dot = false } = {}) {
   return `<span class="badge tone-${esc(tone)}">${dot ? '<span class="dot"></span>' : ''}${esc(text)}</span>`;

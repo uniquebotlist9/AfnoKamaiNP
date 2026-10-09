@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Cleanup test rows and confirm final state
+      - name: Remove scaffolding rows
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
@@ -41,55 +41,27 @@ jobs:
           const TEST_IDS = ['fixedtest0726', 'fixedtest1026'];
 
           (async () => {
-            // 1. Remove my scaffolding notifications + their delivery-log rows.
-            const n = await aw('GET', base('/notifications/rows?limit=100'));
-            const nrows = (n.json && n.json.rows) || [];
+            // Direct deletes for the notification rows (ids are known).
             for (const id of TEST_IDS) {
-              const row = nrows.find((r) => r.$id === id);
-              if (!row) { console.log('test row ' + id + ' not present'); continue; }
               const d = await aw('DELETE', base('/notifications/rows/' + id));
               console.log('delete notification ' + id + ' -> ' + d.status);
             }
 
-            const l = await aw('GET', base('/notificationLog/rows?limit=100'));
+            // Delivery-log rows: list with a safe limit and match by prefix.
+            const l = await aw('GET', base('/notificationLog/rows?limit=60'));
             const lrows = (l.json && l.json.rows) || [];
+            console.log('log rows visible=' + lrows.length + ' total=' + (l.json && l.json.total));
             for (const r of lrows) {
               if (TEST_IDS.some((t) => String(r.notificationId || '').startsWith(t))) {
                 const d = await aw('DELETE', base('/notificationLog/rows/' + r.$id));
-                console.log('delete log row ' + r.$id + ' (notif ' + r.notificationId + ', ' + r.status + ') -> ' + d.status);
+                console.log('delete log ' + r.$id + ' notif=' + r.notificationId + ' status=' + r.status + ' -> ' + d.status);
               }
             }
 
-            // 2. Final function/deployment state.
-            const fn = await aw('GET', '/functions/push-sender');
-            const vars = ((fn.json && fn.json.vars) || []).map((v) => v.key);
-            console.log('function vars: ' + vars.join(','));
-            console.log('function updatedAt: ' + (fn.json && fn.json.$updatedAt));
-
-            const deps = await aw('GET', '/functions/push-sender/deployments?limit=5&query=' +
-              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: '$createdAt', values: [] })));
-            for (const d of ((deps.json && deps.json.deployments) || []).slice(0, 3)) {
-              console.log('deployment ' + d.$id + ' created=' + d.$createdAt + ' status=' + d.status +
-                (d.$id === (fn.json && fn.json.deploymentId) ? ' [ACTIVE]' : ''));
-            }
-
-            // 3. Tables final state.
             const n2 = await aw('GET', base('/notifications/rows?limit=5'));
-            console.log('notifications total=' + (n2.json && n2.json.total));
             const l2 = await aw('GET', base('/notificationLog/rows?limit=5'));
-            const rows2 = (l2.json && l2.json.rows) || [];
-            const tail = rows2.slice(-1);
-            console.log('notificationLog total=' + (l2.json && l2.json.total) +
-              (tail[0] ? ' latest=' + tail[0].$createdAt + ' status=' + tail[0].status : ''));
-
-            // 4. Latest execution for confidence.
-            const ex = await aw('GET', '/functions/push-sender/executions?limit=2&query=' +
-              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
-            for (const e of ((ex.json && ex.json.executions) || [])) {
-              const d = await aw('GET', '/functions/push-sender/executions/' + e.$id);
-              console.log('EXEC ' + e.$createdAt + ' ' + e.trigger + ' :: ' + String((d.json && d.json.logs) || '').slice(0, 600));
-            }
-
+            console.log('final: notifications total=' + (n2.json && n2.json.total) +
+              ' notificationLog total=' + (l2.json && l2.json.total));
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

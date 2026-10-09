@@ -11,112 +11,84 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Inspect notification tables
+      - name: Compare VAPID keys and read push function logs
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
           APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: |
           node <<'NODE'
+          const crypto = require('crypto');
           const EP = 'https://sgp.cloud.appwrite.io/v1';
-          const DB = process.env.APPWRITE_DATABASE_ID;
-          const HDR = {
-            'Content-Type': 'application/json',
-            'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
-            'X-Appwrite-Key': process.env.APPWRITE_API_KEY
-          };
-          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-          async function aw(method, path, body) {
-            for (let i = 0; ; i++) {
-              let res;
-              try {
-                res = await fetch(EP + path, {
-                  method,
-                  headers: HDR,
-                  body: body === undefined ? undefined : JSON.stringify(body)
-                });
-              } catch (e) {
-                if (i >= 4) throw e;
-                await sleep(300 * Math.pow(2, i));
-                continue;
-              }
-              if (res.status === 429 && i < 6) { await sleep(1000 * (i + 1)); continue; }
-              const text = await res.text();
-              let json = null;
-              try { json = text ? JSON.parse(text) : null; } catch (_) {}
-              if (res.status >= 400) {
-                throw new Error(method + ' ' + path + ' -> ' + res.status + ' ' + JSON.stringify(json));
-              }
-              return json;
-            }
+          const SITE_PUB = 'BE059IWEP_ohblWyVzofCA0-hlYSD1-S7H8fCVK5SVe_E7GSzsoP2Wcf7FTvjmopy2xu1N5s9w9UKZ3htWVfMI4';
+          const OLD2_PUB = 'BCNMDTYRbkTYvC_1HbUVuZLHEpmeIVdY3NZNXPgmjrM';
+          const OLD1_PUB = 'BAlZc5BOauiuRe1C5-KGq7162RG7W1';
+
+          console.log('subject:', process.env.VAPID_SUBJECT);
+          console.log('secret VAPID_PUBLIC_KEY :', process.env.VAPID_PUBLIC_KEY);
+
+          let derived = '<derive failed>';
+          try {
+            const priv = Buffer.from(String(process.env.VAPID_PRIVATE_KEY), 'base64');
+            const ecdh = crypto.createECDH('prime256v1');
+            ecdh.setPrivateKey(priv);
+            derived = ecdh.getPublicKey('base64');
+          } catch (e) {
+            derived = '<derive failed: ' + e.message + '>';
           }
+          console.log('derived from PRIVATE    :', derived);
+          console.log('secret pair internally consistent:', derived === process.env.VAPID_PUBLIC_KEY);
+          console.log('secret matches SITE key          :', process.env.VAPID_PUBLIC_KEY === SITE_PUB);
+          console.log('derived matches SITE key         :', derived === SITE_PUB);
+          console.log('secret matches OLD pair2 (.env.example):', process.env.VAPID_PUBLIC_KEY === OLD2_PUB);
 
-          const base = (t) => '/tablesdb/' + DB + '/tables/' + t;
-
-          async function columns(t) {
-            try {
-              const meta = await aw('GET', base(t));
-              const cols = (meta.columns || []).map((c) => c.key || c.$id || c.name);
-              return cols;
-            } catch (e) {
-              try {
-                const out = await aw('GET', base(t) + '/columns');
-                return (out.columns || []).map((c) => c.key || c.$id || c.name);
-              } catch (e2) {
-                return ['<schema read failed: ' + e.message + ' / ' + e2.message + '>'];
+          async function aw(method, path) {
+            const res = await fetch(EP + path, {
+              method,
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
+                'X-Appwrite-Key': process.env.APPWRITE_API_KEY
               }
-            }
-          }
-
-          async function rows(t, limit) {
-            const out = await aw('GET', base(t) + '/rows?limit=' + limit);
-            return { total: out.total, rows: out.rows || [] };
+            });
+            const text = await res.text();
+            let json = null;
+            try { json = text ? JSON.parse(text) : null; } catch (_) {}
+            return { status: res.status, json };
           }
 
           (async () => {
-            const tables = ['notifications', 'notificationLog', 'pushSubscriptions', 'notificationPrefs'];
-            for (const t of tables) {
-              const cols = await columns(t);
-              console.log('COLUMNS ' + t + ' (' + cols.length + '): ' + cols.join(','));
+            // Find the push function.
+            const list = await aw('GET', '/functions?limit=25');
+            if (list.status >= 400) {
+              console.log('FUNCTIONS LIST denied:', list.status, JSON.stringify(list.json));
+              console.log('DONE');
+              return;
             }
+            const fns = list.json.functions || list.json.total && list.json.functions || [];
+            for (const f of fns) console.log('FN', f.$id, '|', f.name, '| enabled=' + f.enabled, '| runtime=' + (f.runtime || '-'));
 
-            // Notification rows: what states exist, do admin fields appear?
-            const n = await rows('notifications', 25);
-            console.log('NOTIFICATIONS total=' + n.total);
-            for (const r of n.rows) {
-              console.log('  N ' + r.$createdAt + ' type=' + r.type + ' audience=' + r.audience +
-                ' pushState=' + r.pushState + ' prio=' + (r.priority === undefined ? '<none>' : r.priority) +
-                ' amount=' + (r.amountPaisa === undefined ? '<none>' : r.amountPaisa) +
-                ' expires=' + (r.expiresAt === undefined ? '<none>' : '<set>') +
-                ' title=' + String(r.title || '').slice(0, 40));
+            const pushFn = fns.find((f) => /push/i.test(f.name) || /push/i.test(f.$id));
+            if (!pushFn) { console.log('no push function found'); console.log('DONE'); return; }
+
+            // Recent executions: stdout/errors carry the FCM error body.
+            const ex = await aw('GET', '/functions/' + pushFn.$id + '/executions?limit=8&query=' +
+              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
+            if (ex.status >= 400) {
+              console.log('EXECUTIONS denied:', ex.status, JSON.stringify(ex.json));
+              console.log('DONE');
+              return;
             }
-
-            // Delivery log: any failures?
-            const l = await rows('notificationLog', 25);
-            console.log('NOTIFICATIONLOG total=' + l.total);
-            for (const r of l.rows) {
-              console.log('  L ' + r.$createdAt + ' status=' + r.status + ' error=' + (r.error || '-') +
-                ' provider=' + (r.provider || '-') + ' notifId=' + String(r.notificationId || r.$id || '').slice(0, 30));
+            for (const e of ex.json.executions || []) {
+              const blob = [e.trigger || '', e.status || '', String(e.stdout || ''), String(e.errors || ''), String(e.logs || '')].join(' ');
+              const interesting = blob.split('\n').filter((l) => /403|VAPID|push error|Vapid|vapid|Forbidden|401|webpush/i.test(l)).slice(0, 6);
+              console.log('EX ' + (e.$createdAt || '-') + ' ' + (e.trigger || '-') + ' status=' + (e.status || '-') + ' exit=' + (e.exitCode === undefined ? '-' : e.exitCode));
+              for (const l of interesting) console.log('   >', l.slice(0, 300));
             }
-
-            // Subscriptions: any devices registered?
-            const s = await rows('pushSubscriptions', 15);
-            console.log('PUSHSUBSCRIPTIONS total=' + s.total);
-            for (const r of s.rows) {
-              let host = '';
-              try { host = new URL(r.endpoint).host; } catch (_) { host = '<bad endpoint>'; }
-              console.log('  S ' + r.$createdAt + ' user=' + r.userId + ' active=' + r.isActive +
-                ' fail=' + r.failCount + ' host=' + host + ' perm=' + (r.permissionStatus || '-'));
-            }
-
-            // Preferences: who turned push on?
-            const p = await rows('notificationPrefs', 15);
-            console.log('NOTIFICATIONPREFS total=' + p.total);
-            for (const r of p.rows) {
-              console.log('  P ' + r.$id + ' push=' + r.push + ' updatedAt=' + (r.updatedAt || '-'));
-            }
-
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

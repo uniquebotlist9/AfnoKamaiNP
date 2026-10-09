@@ -40,64 +40,42 @@ jobs:
             return { status: res.status, json, text };
           }
 
-          function brief(r) {
-            return r.status + ' ' + (r.text || '').slice(0, 300);
-          }
+          const brief = (r) => r.status + ' ' + (r.text || '').slice(0, 300);
 
           (async () => {
-            const fn0 = await aw('GET', '/functions/' + FN);
-            console.log('vars now:', ((fn0.json && fn0.json.vars) || []).map((v) => v.key).join(',') || '<none>');
-
-            const targets = {
-              VAPID_PUBLIC_KEY: process.env.VAPID_PUBLIC_KEY,
-              VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY,
-              VAPID_SUBJECT: process.env.VAPID_SUBJECT
-            };
-            const missing = Object.keys(targets).filter((k) => !targets[k]);
+            const targets = [
+              { variableId: 'vapidpublickey', key: 'VAPID_PUBLIC_KEY', value: process.env.VAPID_PUBLIC_KEY },
+              { variableId: 'vapidprivatekey', key: 'VAPID_PRIVATE_KEY', value: process.env.VAPID_PRIVATE_KEY },
+              { variableId: 'vapidsubject', key: 'VAPID_SUBJECT', value: process.env.VAPID_SUBJECT }
+            ];
+            const missing = targets.filter((t) => !t.value).map((t) => t.key);
             if (missing.length) { console.log('MISSING SECRETS:', missing.join(',')); process.exit(1); }
 
             const restoreStart = new Date().toISOString();
 
-            for (const key of Object.keys(targets)) {
-              const value = targets[key];
-              const id = key.toLowerCase();
-
-              // 1. Create (the vars were deleted by the previous run).
-              let r = await aw('POST', '/functions/' + FN + '/variables', { key, value });
-              console.log('CREATE ' + key + ' -> ' + brief(r));
-              if (r.status === 200 || r.status === 201) { await sleep(400); continue; }
-
-              // 2. If create refuses, try update shapes in case it still exists.
-              const shapes = [
-                { m: 'PUT', p: '/functions/' + FN + '/variables/' + id, b: { key, value } },
-                { m: 'PUT', p: '/functions/' + FN + '/variables/' + id, b: { value } },
-                { m: 'PATCH', p: '/functions/' + FN + '/variables/' + id, b: { key, value } },
-                { m: 'PATCH', p: '/functions/' + FN + '/variables/' + id, b: { value } },
-                { m: 'POST', p: '/functions/' + FN + '/variables', b: { key, value, secret: key.includes('PRIVATE') } }
-              ];
-              let ok = false;
-              for (const s of shapes) {
-                r = await aw(s.m, s.p, s.b);
-                console.log(s.m + ' ' + s.p + ' ' + JSON.stringify(s.b).slice(0, 40) + ' -> ' + brief(r));
-                if (r.status === 200 || r.status === 201) { ok = true; break; }
-                await sleep(300);
+            for (const t of targets) {
+              // Create (POST needs variableId + key + value per the live API).
+              let r = await aw('POST', '/functions/' + FN + '/variables', t);
+              console.log('CREATE ' + t.key + ' -> ' + brief(r));
+              if (r.status !== 200 && r.status !== 201) {
+                // Fall back to PUT by id, in case it still exists.
+                r = await aw('PUT', '/functions/' + FN + '/variables/' + t.variableId, { key: t.key, value: t.value });
+                console.log('PUT fallback ' + t.key + ' -> ' + brief(r));
               }
-              if (!ok) { console.log('RESTORE FAILED for ' + key); }
-              await sleep(400);
+              await sleep(500);
             }
 
             const fn1 = await aw('GET', '/functions/' + FN);
             const vars = (fn1.json && fn1.json.vars) || [];
             console.log('vars after restore:', vars.map((v) => v.key).join(',') || '<none>');
-            const haveAll = ['VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT'].every((k) => vars.some((v) => v.key === k));
+            const haveAll = targets.every((t) => vars.some((v) => v.key === t.key));
             console.log('all three present:', haveAll);
             if (!haveAll) { console.log('DONE'); process.exit(1); }
 
-            // Trigger immediately if scope allows; otherwise rely on schedule.
+            // Trigger immediately if the key allows it; schedule covers otherwise.
             const trig = await aw('POST', '/functions/' + FN + '/executions', {});
             console.log('manual trigger -> ' + brief(trig));
 
-            // Wait for an execution that started AFTER the restore and read it.
             const deadline = Date.now() + 6.5 * 60 * 1000;
             let verified = false;
             while (Date.now() < deadline && !verified) {
@@ -112,11 +90,11 @@ jobs:
                 console.log('EXEC ' + e.$createdAt + ' trigger=' + e.trigger + ':');
                 console.log(out.slice(0, 2500));
                 const bad403 = /"status":403|VapidPkHashMismatch|do not correspond/.test(out);
-                const fatal = /FATAL|required/i.test(out);
+                const fatal = /FATAL:|Missing required/.test(out);
                 const m = out.match(/"sent":(\d+)/);
                 const sent = m ? Number(m[1]) : 0;
-                if (fatal) { console.log('function still failing env check'); }
-                else if (bad403) { console.log('STILL VAPID MISMATCH'); }
+                if (fatal) console.log('function still failing env check');
+                else if (bad403) console.log('STILL VAPID MISMATCH');
                 else if (sent > 0) { console.log('FIX VERIFIED: sent=' + sent + ', no VAPID mismatches'); verified = true; }
                 else { console.log('ran clean but sent=0 (queue empty or all skipped)'); verified = true; }
                 break;

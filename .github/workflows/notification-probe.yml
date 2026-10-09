@@ -9,27 +9,40 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Inspect test notification failure
+      - uses: actions/checkout@v4
+
+      - name: Package function and redeploy (cold start)
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
           APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
         run: |
+          cd functions/push-fn
+          npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          cd ../..
+          zip -qr code.zip functions/push-fn -x "*/node_modules/*"
+          echo "zip built: $(du -h code.zip | cut -f1)"
           node <<'NODE'
+          const fs = require('fs');
           const EP = 'https://sgp.cloud.appwrite.io/v1';
+          const FN = 'push-sender';
           const DB = process.env.APPWRITE_DATABASE_ID;
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
           async function aw(method, path, body) {
+            const isForm = typeof FormData !== 'undefined' && body instanceof FormData;
             const res = await fetch(EP + path, {
               method,
-              headers: {
-                'Content-Type': 'application/json',
-                'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
-                'X-Appwrite-Key': process.env.APPWRITE_API_KEY
-              },
-              body: body === undefined ? undefined : JSON.stringify(body)
+              headers: isForm
+                ? { 'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID, 'X-Appwrite-Key': process.env.APPWRITE_API_KEY }
+                : {
+                    'Content-Type': 'application/json',
+                    'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
+                    'X-Appwrite-Key': process.env.APPWRITE_API_KEY
+                  },
+              body: body === undefined ? undefined : (isForm ? body : JSON.stringify(body))
             });
             const text = await res.text();
             let json = null;
@@ -40,52 +53,119 @@ jobs:
           const base = (t) => '/tablesdb/' + DB + '/tables/' + t;
 
           (async () => {
-            // 1. Full logs of the event execution that processed the test row.
-            const ex = await aw('GET', '/functions/push-sender/executions?limit=8&query=' +
-              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
-            const list = (ex.json && ex.json.executions) || [];
-            const evt = list.find((e) => e.trigger === 'event' && e.$createdAt >= '2026-10-09T07:29');
-            if (evt) {
-              const d = await aw('GET', '/functions/push-sender/executions/' + evt.$id);
-              const j = d.json || {};
-              console.log('EVENT EXEC ' + evt.$createdAt);
-              for (const f of ['logs', 'stdout', 'stderr', 'errors']) {
-                const v = String(j[f] || '');
-                console.log('-- ' + f + ' (' + v.length + ') --');
-                console.log(v);
+            // 1. Function settings — entrypoint + build commands.
+            const fn = await aw('GET', '/functions/' + FN);
+            const entry = (fn.json && fn.json.entrypoint) || '';
+            const cmds = (fn.json && fn.json.commands) || '';
+            console.log('fn: entrypoint=' + entry + ' commands=' + JSON.stringify(cmds) +
+              ' runtime=' + (fn.json && fn.json.runtime));
+
+            // 2. Upload a fresh deployment (forces a cold container on activate).
+            const fd = new FormData();
+            fd.append('code', new Blob([fs.readFileSync('code.zip')], { type: 'application/zip' }), 'code.zip');
+            if (entry) fd.append('entrypoint', entry);
+            const dep = await aw('POST', '/functions/' + FN + '/deployments', fd);
+            console.log('create deployment -> ' + dep.status + ' ' + (dep.text || '').slice(0, 400));
+            if (dep.status >= 400) { console.log('DONE'); process.exit(1); }
+            const depId = dep.json.$id;
+
+            // 3. Wait for the build.
+            let build = null;
+            for (let i = 0; i < 30; i++) {
+              await sleep(6000);
+              const g = await aw('GET', '/functions/' + FN + '/deployments/' + depId);
+              build = g.json;
+              const st = build && build.status;
+              if (i % 5 === 0) console.log('build status: ' + st);
+              if (st === 'failed') {
+                console.log('BUILD FAILED: ' + JSON.stringify(build).slice(0, 1500));
+                process.exit(1);
               }
+              if (st === 'active') break;
+              if (['building', 'updating', 'queued', 'pending'].indexOf(st) === -1 && i > 3) {
+                // Build finished but not activated — try activating explicitly.
+                const act = await aw('PATCH', '/functions/' + FN + '/deployments/' + depId, { activate: true });
+                console.log('activate attempt -> ' + act.status + ' ' + (act.text || '').slice(0, 200));
+                if (act.status === 200) break;
+              }
+            }
+            console.log('final build status: ' + (build && build.status));
+            if (!build || build.status === 'failed') { console.log('DONE'); process.exit(1); }
+
+            // 4. E2E: create a test notification for a device subscribed today.
+            const prefs = await aw('GET', base('/notificationPrefs/rows?limit=10'));
+            const prefsById = {};
+            for (const r of (prefs.json && prefs.json.rows) || []) prefsById[r.$id] = r;
+            const subs = await aw('GET', base('/pushSubscriptions/rows?limit=20'));
+            const srows = (subs.json && subs.json.rows) || [];
+            const good = srows.filter((s) => s.isActive &&
+              (!prefsById[s.userId] || prefsById[s.userId].push !== false));
+            if (!good.length) { console.log('NO target device'); console.log('DONE'); process.exit(1); }
+            const target = good[0].userId;
+            console.log('target: ' + target);
+
+            const created = await aw('POST', base('/notifications/rows'), {
+              rowId: 'fixedtest1026',
+              data: {
+                userId: target,
+                audience: 'user',
+                type: 'system',
+                category: 'system',
+                title: 'Notifications fixed test 2',
+                body: 'Push delivery verified after VAPID resync.',
+                link: '/notifications',
+                read: false,
+                pushState: 'queued',
+                searchText: 'notifications fixed test',
+                createdAt: new Date().toISOString()
+              },
+              permissions: ['read("user:' + target + '")']
+            });
+            console.log('create -> ' + created.status + ' ' + (created.text || '').slice(0, 500));
+
+            // 5. Poll the delivery log for this test (match by title via table scan
+            //    since the rowId may be regenerated).
+            const testIds = new Set(['fixedtest1026']);
+            const createdId = created.json && created.json.$id;
+            if (createdId) testIds.add(createdId);
+
+            let result = null;
+            for (let i = 0; i < 30 && !result; i++) {
+              await sleep(10000);
+              const l = await aw('GET', base('/notificationLog/rows?limit=100'));
+              const rows = (l.json && l.json.rows) || [];
+              const hit = rows.find((r) => testIds.has(r.notificationId));
+              if (hit) { result = hit; break; }
+              if (i === 4) await aw('POST', '/functions/' + FN + '/executions', {});
+            }
+            if (result) {
+              console.log('LOG: status=' + result.status + ' error=' + (result.error || '-') + ' sub=' + result.subscriptionId);
             } else {
-              console.log('no event exec found; triggers: ' + list.map((e) => e.trigger + '@' + e.$createdAt).join(', '));
+              console.log('NO LOG ROW within window');
             }
 
-            // 2. The newest notification row — the real $id and final state.
+            // 6. Notification final state + latest fn logs.
             const n = await aw('GET', base('/notifications/rows?limit=100'));
             const nrows = (n.json && n.json.rows) || [];
-            console.log('NOTIFICATIONS total=' + (n.json && n.json.total));
-            const last = nrows[nrows.length - 1];
-            if (last) {
-              console.log('LAST N ' + last.$id + ' created=' + last.$createdAt + ' type=' + last.type +
-                ' pushState=' + last.pushState + ' attempts=' + last.pushAttempts +
-                ' skipReason=' + (last.pushSkipReason || '-') + ' lastError=' + (last.pushLastError || '-') +
-                ' deviceCount=' + last.pushDeviceCount + ' sentCount=' + last.pushSentCount);
-            }
-            const mine = nrows.find((r) => String(r.title || '').includes('Notifications fixed'));
+            console.log('notifications returned=' + nrows.length + ' total=' + (n.json && n.json.total));
+            const mine = nrows.find((r) => testIds.has(r.$id) || String(r.title || '').includes('test 2'));
             if (mine) {
-              console.log('TEST N ' + mine.$id + ' pushState=' + mine.pushState + ' attempts=' + mine.pushAttempts +
-                ' skipReason=' + (mine.pushSkipReason || '-') + ' lastError=' + (mine.pushLastError || '-') +
+              console.log('ROW ' + mine.$id + ' pushState=' + mine.pushState + ' attempts=' + mine.pushAttempts +
                 ' deviceCount=' + mine.pushDeviceCount + ' sentCount=' + mine.pushSentCount +
-                ' perms=' + JSON.stringify(mine.$permissions));
+                ' lastError=' + (mine.pushLastError || '-'));
+            } else {
+              console.log('TEST ROW NOT IN LIST; recent rows: ' +
+                nrows.slice(-3).map((r) => r.$id + '@' + r.$createdAt).join(', '));
             }
 
-            // 3. The newest delivery-log rows, in full.
-            const l = await aw('GET', base('/notificationLog/rows?limit=100'));
-            const lrows = (l.json && l.json.rows) || [];
-            console.log('NOTIFICATIONLOG total=' + (l.json && l.json.total));
-            for (const r of lrows.slice(-4)) {
-              console.log('L ' + r.$id + ' ' + r.$createdAt + ' status=' + r.status + ' error=' + (r.error || '-') +
-                ' notif=' + r.notificationId + ' sub=' + r.subscriptionId + ' user=' + r.userId);
+            const ex = await aw('GET', '/functions/' + FN + '/executions?limit=3&query=' +
+              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
+            for (const e of ((ex.json && ex.json.executions) || [])) {
+              const d = await aw('GET', '/functions/' + FN + '/executions/' + e.$id);
+              console.log('EXEC ' + e.$createdAt + ' ' + e.trigger + ' :: ' + String((d.json && d.json.logs) || '').slice(0, 1500));
             }
 
+            console.log(result && result.status === 'sent' ? 'E2E VERIFIED' : 'E2E NOT VERIFIED');
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

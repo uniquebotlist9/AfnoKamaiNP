@@ -11,49 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Compare VAPID keys and read push function logs
+      - name: Read push function config and execution logs
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
-          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
-          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
-          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: |
           node <<'NODE'
-          const crypto = require('crypto');
           const EP = 'https://sgp.cloud.appwrite.io/v1';
 
-          const SITE_PUB = 'BE059IWEP_ohblWyVzofCA0-hlYSD1-S7H8fCVK5SVe_E7GSzsoP2Wcf7FTvjmopy2xu1N5s9w9UKZ3htWVfMI4';
-          const OLD2_PUB = 'BCNMDTYRbkTYvC_1HbUVuZLHEpmeIVdY3NZNXPgmjrM';
-          const OLD1_PUB = 'BAlZc5BOauiuRe1C5-KGq7162RG7W1';
-
-          console.log('subject:', process.env.VAPID_SUBJECT);
-          console.log('secret VAPID_PUBLIC_KEY :', process.env.VAPID_PUBLIC_KEY);
-
-          let derived = '<derive failed>';
-          try {
-            const priv = Buffer.from(String(process.env.VAPID_PRIVATE_KEY), 'base64');
-            const ecdh = crypto.createECDH('prime256v1');
-            ecdh.setPrivateKey(priv);
-            derived = ecdh.getPublicKey('base64');
-          } catch (e) {
-            derived = '<derive failed: ' + e.message + '>';
-          }
-          console.log('derived from PRIVATE    :', derived);
-          console.log('secret pair internally consistent:', derived === process.env.VAPID_PUBLIC_KEY);
-          console.log('secret matches SITE key          :', process.env.VAPID_PUBLIC_KEY === SITE_PUB);
-          console.log('derived matches SITE key         :', derived === SITE_PUB);
-          console.log('secret matches OLD pair2 (.env.example):', process.env.VAPID_PUBLIC_KEY === OLD2_PUB);
-
-          async function aw(method, path) {
+          async function aw(method, path, body) {
             const res = await fetch(EP + path, {
               method,
               headers: {
                 'Content-Type': 'application/json',
                 'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
                 'X-Appwrite-Key': process.env.APPWRITE_API_KEY
-              }
+              },
+              body: body === undefined ? undefined : JSON.stringify(body)
             });
             const text = await res.text();
             let json = null;
@@ -62,33 +37,47 @@ jobs:
           }
 
           (async () => {
-            // Find the push function.
-            const list = await aw('GET', '/functions?limit=25');
-            if (list.status >= 400) {
-              console.log('FUNCTIONS LIST denied:', list.status, JSON.stringify(list.json));
-              console.log('DONE');
-              return;
+            // 1. Function metadata — what shape is config stored in?
+            const fn = await aw('GET', '/functions/push-sender');
+            console.log('FUNCTION GET status=' + fn.status);
+            if (fn.json) {
+              const keys = Object.keys(fn.json);
+              console.log('FUNCTION fields:', keys.join(','));
+              // Print any env/variable-ish field, redacting private keys.
+              for (const k of ['env', 'variables', 'vars', 'secrets', 'environmentVariables']) {
+                if (fn.json[k] !== undefined) {
+                  const v = JSON.stringify(fn.json[k]).replace(
+                    /("?(?:VAPID_PRIVATE_KEY|private)"?\s*[:=]\s*")([^"]*)(")/gi,
+                    '$1<redacted>$3'
+                  );
+                  console.log('FUNCTION ' + k + ':', v.slice(0, 1500));
+                }
+              }
+              if (fn.json.runtime) console.log('runtime:', fn.json.runtime, 'entry:', fn.json.entrypoint || '-', 'spec:', fn.json.entrypoint || '');
             }
-            const fns = list.json.functions || list.json.total && list.json.functions || [];
-            for (const f of fns) console.log('FN', f.$id, '|', f.name, '| enabled=' + f.enabled, '| runtime=' + (f.runtime || '-'));
 
-            const pushFn = fns.find((f) => /push/i.test(f.name) || /push/i.test(f.$id));
-            if (!pushFn) { console.log('no push function found'); console.log('DONE'); return; }
-
-            // Recent executions: stdout/errors carry the FCM error body.
-            const ex = await aw('GET', '/functions/' + pushFn.$id + '/executions?limit=8&query=' +
+            // 2. Latest event-triggered execution — full stdout/errors.
+            const ex = await aw('GET', '/functions/push-sender/executions?limit=40&query=' +
               encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
-            if (ex.status >= 400) {
-              console.log('EXECUTIONS denied:', ex.status, JSON.stringify(ex.json));
-              console.log('DONE');
-              return;
+            const all = (ex.json && ex.json.executions) || [];
+            const events = all.filter((e) => e.trigger === 'event');
+            console.log('executions total=' + all.length + ' events=' + events.length);
+            for (const e of events.slice(0, 2)) {
+              console.log('EVENT ' + e.$id + ' ' + e.$createdAt + ' status=' + e.status);
+              const detail = await aw('GET', '/functions/push-sender/executions/' + e.$id);
+              const d = detail.json || {};
+              console.log('DETAIL status=' + detail.status + ' fields=' + Object.keys(d).join(','));
+              const out = String(d.stdout || d.logs || '');
+              const err = String(d.errors || d.stderr || '');
+              console.log('STDOUT (' + out.length + ' chars):');
+              console.log(out.slice(0, 4000));
+              if (err) {
+                console.log('ERRORS (' + err.length + ' chars):');
+                console.log(err.slice(0, 2000));
+              }
             }
-            for (const e of ex.json.executions || []) {
-              const blob = [e.trigger || '', e.status || '', String(e.stdout || ''), String(e.errors || ''), String(e.logs || '')].join(' ');
-              const interesting = blob.split('\n').filter((l) => /403|VAPID|push error|Vapid|vapid|Forbidden|401|webpush/i.test(l)).slice(0, 6);
-              console.log('EX ' + (e.$createdAt || '-') + ' ' + (e.trigger || '-') + ' status=' + (e.status || '-') + ' exit=' + (e.exitCode === undefined ? '-' : e.exitCode));
-              for (const l of interesting) console.log('   >', l.slice(0, 300));
-            }
+
+            console.log('expected public (site+github):', process.env.VAPID_PUBLIC_KEY);
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

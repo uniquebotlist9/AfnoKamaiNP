@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Remove scaffolding rows
+      - name: Remove test delivery-log rows
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
@@ -41,27 +41,47 @@ jobs:
           const TEST_IDS = ['fixedtest0726', 'fixedtest1026'];
 
           (async () => {
-            // Direct deletes for the notification rows (ids are known).
-            for (const id of TEST_IDS) {
-              const d = await aw('DELETE', base('/notifications/rows/' + id));
-              console.log('delete notification ' + id + ' -> ' + d.status);
-            }
+            // Newest-first first page — my test rows are the most recent.
+            let rows = [];
+            const q = encodeURIComponent('orderDesc("$createdAt")');
+            let r = await aw('GET', base('/notificationLog/rows?limit=25&queries=' + q));
+            rows = (r.json && r.json.rows) || [];
+            console.log('page1 (orderDesc): ' + rows.length + ' rows, newest=' +
+              (rows[0] && rows[0].$createdAt) + ', oldest=' +
+              (rows[rows.length - 1] && rows[rows.length - 1].$createdAt));
 
-            // Delivery-log rows: list with a safe limit and match by prefix.
-            const l = await aw('GET', base('/notificationLog/rows?limit=60'));
-            const lrows = (l.json && l.json.rows) || [];
-            console.log('log rows visible=' + lrows.length + ' total=' + (l.json && l.json.total));
-            for (const r of lrows) {
-              if (TEST_IDS.some((t) => String(r.notificationId || '').startsWith(t))) {
-                const d = await aw('DELETE', base('/notificationLog/rows/' + r.$id));
-                console.log('delete log ' + r.$id + ' notif=' + r.notificationId + ' status=' + r.status + ' -> ' + d.status);
+            if (!rows.length || !String(rows[0].$createdAt || '').startsWith('2026-10-09T07')) {
+              console.log('orderDesc not applied — paginating with cursorAfter');
+              rows = [];
+              let cursor = null;
+              for (let i = 0; i < 4; i++) {
+                const url = base('/notificationLog/rows?limit=25' +
+                  (cursor ? '&queries=' + encodeURIComponent('cursorAfter("' + cursor + '")') : ''));
+                const p = await aw('GET', url);
+                const batch = (p.json && p.json.rows) || [];
+                if (!batch.length) break;
+                rows = rows.concat(batch);
+                cursor = batch[batch.length - 1].$id;
+                console.log('page ' + (i + 1) + ': ' + batch.length + ' rows, last=' + cursor);
+                if (rows.some((x) => TEST_IDS.some((t) => String(x.notificationId || '').startsWith(t)))) break;
               }
             }
 
-            const n2 = await aw('GET', base('/notifications/rows?limit=5'));
+            let deleted = 0;
+            for (const row of rows) {
+              if (TEST_IDS.some((t) => String(row.notificationId || '').startsWith(t))) {
+                const d = await aw('DELETE', base('/notificationLog/rows/' + row.$id));
+                console.log('delete log ' + row.$id + ' notif=' + row.notificationId +
+                  ' status=' + row.status + ' -> ' + d.status);
+                if (d.status === 204) deleted++;
+              }
+            }
+            console.log('deleted=' + deleted);
+
             const l2 = await aw('GET', base('/notificationLog/rows?limit=5'));
-            console.log('final: notifications total=' + (n2.json && n2.json.total) +
-              ' notificationLog total=' + (l2.json && l2.json.total));
+            const n2 = await aw('GET', base('/notifications/rows?limit=5'));
+            console.log('final: notificationLog total=' + (l2.json && l2.json.total) +
+              ' notifications total=' + (n2.json && n2.json.total));
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

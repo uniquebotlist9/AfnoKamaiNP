@@ -1,0 +1,125 @@
+name: Notification Probe
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect notification tables
+        env:
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
+        run: |
+          node <<'NODE'
+          const EP = 'https://sgp.cloud.appwrite.io/v1';
+          const DB = process.env.APPWRITE_DATABASE_ID;
+          const HDR = {
+            'Content-Type': 'application/json',
+            'X-Appwrite-Project': process.env.APPWRITE_PROJECT_ID,
+            'X-Appwrite-Key': process.env.APPWRITE_API_KEY
+          };
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+          async function aw(method, path, body) {
+            for (let i = 0; ; i++) {
+              let res;
+              try {
+                res = await fetch(EP + path, {
+                  method,
+                  headers: HDR,
+                  body: body === undefined ? undefined : JSON.stringify(body)
+                });
+              } catch (e) {
+                if (i >= 4) throw e;
+                await sleep(300 * Math.pow(2, i));
+                continue;
+              }
+              if (res.status === 429 && i < 6) { await sleep(1000 * (i + 1)); continue; }
+              const text = await res.text();
+              let json = null;
+              try { json = text ? JSON.parse(text) : null; } catch (_) {}
+              if (res.status >= 400) {
+                throw new Error(method + ' ' + path + ' -> ' + res.status + ' ' + JSON.stringify(json));
+              }
+              return json;
+            }
+          }
+
+          const base = (t) => '/tablesdb/' + DB + '/tables/' + t;
+
+          async function columns(t) {
+            try {
+              const meta = await aw('GET', base(t));
+              const cols = (meta.columns || []).map((c) => c.key || c.$id || c.name);
+              return cols;
+            } catch (e) {
+              try {
+                const out = await aw('GET', base(t) + '/columns');
+                return (out.columns || []).map((c) => c.key || c.$id || c.name);
+              } catch (e2) {
+                return ['<schema read failed: ' + e.message + ' / ' + e2.message + '>'];
+              }
+            }
+          }
+
+          async function rows(t, limit) {
+            const out = await aw('GET', base(t) + '/rows?limit=' + limit);
+            return { total: out.total, rows: out.rows || [] };
+          }
+
+          (async () => {
+            const tables = ['notifications', 'notificationLog', 'pushSubscriptions', 'notificationPrefs'];
+            for (const t of tables) {
+              const cols = await columns(t);
+              console.log('COLUMNS ' + t + ' (' + cols.length + '): ' + cols.join(','));
+            }
+
+            // Notification rows: what states exist, do admin fields appear?
+            const n = await rows('notifications', 25);
+            console.log('NOTIFICATIONS total=' + n.total);
+            for (const r of n.rows) {
+              console.log('  N ' + r.$createdAt + ' type=' + r.type + ' audience=' + r.audience +
+                ' pushState=' + r.pushState + ' prio=' + (r.priority === undefined ? '<none>' : r.priority) +
+                ' amount=' + (r.amountPaisa === undefined ? '<none>' : r.amountPaisa) +
+                ' expires=' + (r.expiresAt === undefined ? '<none>' : '<set>') +
+                ' title=' + String(r.title || '').slice(0, 40));
+            }
+
+            // Delivery log: any failures?
+            const l = await rows('notificationLog', 25);
+            console.log('NOTIFICATIONLOG total=' + l.total);
+            for (const r of l.rows) {
+              console.log('  L ' + r.$createdAt + ' status=' + r.status + ' error=' + (r.error || '-') +
+                ' provider=' + (r.provider || '-') + ' notifId=' + String(r.notificationId || r.$id || '').slice(0, 30));
+            }
+
+            // Subscriptions: any devices registered?
+            const s = await rows('pushSubscriptions', 15);
+            console.log('PUSHSUBSCRIPTIONS total=' + s.total);
+            for (const r of s.rows) {
+              let host = '';
+              try { host = new URL(r.endpoint).host; } catch (_) { host = '<bad endpoint>'; }
+              console.log('  S ' + r.$createdAt + ' user=' + r.userId + ' active=' + r.isActive +
+                ' fail=' + r.failCount + ' host=' + host + ' perm=' + (r.permissionStatus || '-'));
+            }
+
+            // Preferences: who turned push on?
+            const p = await rows('notificationPrefs', 15);
+            console.log('NOTIFICATIONPREFS total=' + p.total);
+            for (const r of p.rows) {
+              console.log('  P ' + r.$id + ' push=' + r.push + ' updatedAt=' + (r.updatedAt || '-'));
+            }
+
+            console.log('DONE');
+          })().catch((e) => {
+            console.error('FAILED:', e.message);
+            process.exit(1);
+          });
+          NODE

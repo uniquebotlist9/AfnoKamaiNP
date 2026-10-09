@@ -9,16 +9,20 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Read push function config and execution logs
+      - name: Converge push-sender VAPID vars and verify
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
+          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
           VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: |
           node <<'NODE'
           const EP = 'https://sgp.cloud.appwrite.io/v1';
+          const FN = 'push-sender';
+          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
           async function aw(method, path, body) {
             const res = await fetch(EP + path, {
@@ -37,47 +41,99 @@ jobs:
           }
 
           (async () => {
-            // 1. Function metadata — what shape is config stored in?
-            const fn = await aw('GET', '/functions/push-sender');
-            console.log('FUNCTION GET status=' + fn.status);
-            if (fn.json) {
-              const keys = Object.keys(fn.json);
-              console.log('FUNCTION fields:', keys.join(','));
-              // Print any env/variable-ish field, redacting private keys.
-              for (const k of ['env', 'variables', 'vars', 'secrets', 'environmentVariables']) {
-                if (fn.json[k] !== undefined) {
-                  const v = JSON.stringify(fn.json[k]).replace(
-                    /("?(?:VAPID_PRIVATE_KEY|private)"?\s*[:=]\s*")([^"]*)(")/gi,
-                    '$1<redacted>$3'
-                  );
-                  console.log('FUNCTION ' + k + ':', v.slice(0, 1500));
+            const fn = await aw('GET', '/functions/' + FN);
+            if (fn.status !== 200) {
+              console.log('FUNCTION GET failed:', fn.status, JSON.stringify(fn.json));
+              process.exit(1);
+            }
+            const vars = fn.json.vars || [];
+            console.log('vars found:', vars.map((v) => v.key).join(', '));
+
+            const targets = {
+              VAPID_PUBLIC_KEY: process.env.VAPID_PUBLIC_KEY,
+              VAPID_PRIVATE_KEY: process.env.VAPID_PRIVATE_KEY,
+              VAPID_SUBJECT: process.env.VAPID_SUBJECT
+            };
+            const missing = Object.keys(targets).filter((k) => !targets[k]);
+            if (missing.length) {
+              console.log('MISSING SECRETS:', missing.join(','));
+              process.exit(1);
+            }
+
+            const updateStart = new Date().toISOString();
+            let allOk = true;
+
+            for (const key of Object.keys(targets)) {
+              const v = vars.find((x) => x.key === key);
+              if (!v) {
+                console.log('VAR ' + key + ' NOT FOUND — creating');
+                const created = await aw('POST', '/functions/' + FN + '/variables', { key, value: targets[key] });
+                console.log('  create -> ' + created.status);
+                if (created.status >= 400) allOk = false;
+                continue;
+              }
+              const attempts = [
+                { p: '/functions/' + FN + '/variables/' + v.$id, b: { key, value: targets[key] } },
+                { p: '/functions/' + FN + '/variables/' + v.$id, b: { value: targets[key] } },
+                { p: '/functions/' + FN + '/vars/' + v.$id, b: { key, value: targets[key] } },
+                { p: '/functions/' + FN + '/vars/' + v.$id, b: { value: targets[key] } }
+              ];
+              let done = 0;
+              for (const a of attempts) {
+                const r = await aw('PATCH', a.p, a.b);
+                if (r.status === 200) { done = r.status; console.log('VAR ' + key + ' updated via ' + a.p); break; }
+                done = r.status;
+              }
+              if (done !== 200) {
+                // Last resort: delete + recreate.
+                const del = await aw('DELETE', '/functions/' + FN + '/variables/' + v.$id);
+                const cre = await aw('POST', '/functions/' + FN + '/variables', { key, value: targets[key] });
+                console.log('VAR ' + key + ' patch failed, delete=' + del.status + ' create=' + cre.status);
+                if (cre.status !== 200) allOk = false;
+                else console.log('VAR ' + key + ' recreated');
+              }
+            }
+
+            if (!allOk) {
+              console.log('FIX INCOMPLETE — aborting before verification');
+              process.exit(1);
+            }
+
+            // Try to trigger immediately; if execution scope is denied, fall
+            // back to the function's own every-5-minute schedule.
+            const trig = await aw('POST', '/functions/' + FN + '/executions', {});
+            console.log('manual trigger ->', trig.status);
+
+            // Poll for an execution that STARTED after the update and has logs.
+            const deadline = Date.now() + 6.5 * 60 * 1000;
+            let verified = false;
+            while (Date.now() < deadline && !verified) {
+              await sleep(20000);
+              const ex = await aw('GET', '/functions/' + FN + '/executions?limit=6&query=' +
+                encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
+              const list = (ex.json && ex.json.executions) || [];
+              const fresh = list.filter((e) => e.$createdAt > updateStart);
+              for (const e of fresh) {
+                const d = await aw('GET', '/functions/' + FN + '/executions/' + e.$id);
+                const out = String((d.json && (d.json.logs || d.json.stdout)) || '');
+                if (!out) continue;
+                console.log('EXEC ' + e.$createdAt + ' trigger=' + e.trigger + ':');
+                console.log(out.slice(0, 2500));
+                const bad403 = /"status":403|VapidPkHashMismatch|do not correspond/.test(out);
+                const sentMatch = out.match(/"sent":(\d+)/);
+                const sent = sentMatch ? Number(sentMatch[1]) : 0;
+                if (!bad403 && sent > 0) {
+                  console.log('FIX VERIFIED: sent=' + sent + ', no VAPID mismatches');
+                  verified = true;
+                } else if (bad403) {
+                  console.log('still failing with VAPID mismatch — keys not applied yet');
+                } else {
+                  console.log('ran but sent=0 (queue may be empty or all skipped)');
                 }
-              }
-              if (fn.json.runtime) console.log('runtime:', fn.json.runtime, 'entry:', fn.json.entrypoint || '-', 'spec:', fn.json.entrypoint || '');
-            }
-
-            // 2. Latest event-triggered execution — full stdout/errors.
-            const ex = await aw('GET', '/functions/push-sender/executions?limit=40&query=' +
-              encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
-            const all = (ex.json && ex.json.executions) || [];
-            const events = all.filter((e) => e.trigger === 'event');
-            console.log('executions total=' + all.length + ' events=' + events.length);
-            for (const e of events.slice(0, 2)) {
-              console.log('EVENT ' + e.$id + ' ' + e.$createdAt + ' status=' + e.status);
-              const detail = await aw('GET', '/functions/push-sender/executions/' + e.$id);
-              const d = detail.json || {};
-              console.log('DETAIL status=' + detail.status + ' fields=' + Object.keys(d).join(','));
-              const out = String(d.stdout || d.logs || '');
-              const err = String(d.errors || d.stderr || '');
-              console.log('STDOUT (' + out.length + ' chars):');
-              console.log(out.slice(0, 4000));
-              if (err) {
-                console.log('ERRORS (' + err.length + ' chars):');
-                console.log(err.slice(0, 2000));
+                break;
               }
             }
-
-            console.log('expected public (site+github):', process.env.VAPID_PUBLIC_KEY);
+            if (!verified) console.log('NOT VERIFIED within window — re-run the probe to inspect the next scheduled run');
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

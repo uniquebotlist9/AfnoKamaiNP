@@ -9,20 +9,17 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Restore push-sender VAPID vars and verify
+      - name: Inspect latest failure detail
         env:
           APPWRITE_API_KEY: ${{ secrets.APPWRITE_API_KEY }}
           APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_PROJECT_ID }}
-          VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
-          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
-          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          APPWRITE_DATABASE_ID: ${{ secrets.APPWRITE_DATABASE_ID }}
         run: |
           node <<'NODE'
           const EP = 'https://sgp.cloud.appwrite.io/v1';
-          const FN = 'push-sender';
-          const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+          const DB = process.env.APPWRITE_DATABASE_ID;
 
           async function aw(method, path, body) {
             const res = await fetch(EP + path, {
@@ -40,67 +37,36 @@ jobs:
             return { status: res.status, json, text };
           }
 
-          const brief = (r) => r.status + ' ' + (r.text || '').slice(0, 300);
-
           (async () => {
-            const targets = [
-              { variableId: 'vapidpublickey', key: 'VAPID_PUBLIC_KEY', value: process.env.VAPID_PUBLIC_KEY },
-              { variableId: 'vapidprivatekey', key: 'VAPID_PRIVATE_KEY', value: process.env.VAPID_PRIVATE_KEY },
-              { variableId: 'vapidsubject', key: 'VAPID_SUBJECT', value: process.env.VAPID_SUBJECT }
-            ];
-            const missing = targets.filter((t) => !t.value).map((t) => t.key);
-            if (missing.length) { console.log('MISSING SECRETS:', missing.join(',')); process.exit(1); }
-
-            const restoreStart = new Date().toISOString();
-
-            for (const t of targets) {
-              // Create (POST needs variableId + key + value per the live API).
-              let r = await aw('POST', '/functions/' + FN + '/variables', t);
-              console.log('CREATE ' + t.key + ' -> ' + brief(r));
-              if (r.status !== 200 && r.status !== 201) {
-                // Fall back to PUT by id, in case it still exists.
-                r = await aw('PUT', '/functions/' + FN + '/variables/' + t.variableId, { key: t.key, value: t.value });
-                console.log('PUT fallback ' + t.key + ' -> ' + brief(r));
-              }
-              await sleep(500);
+            // 1. Full detail of the post-restore execution.
+            const ex = await aw('GET', '/functions/push-sender/executions/6ac8968439d43b977381');
+            const d = ex.json || {};
+            console.log('EXEC detail status=' + ex.status + ' fnStatus=' + d.status);
+            for (const field of ['logs', 'stdout', 'stderr', 'errors']) {
+              const v = String(d[field] || '');
+              console.log('--- ' + field + ' (' + v.length + ' chars) ---');
+              console.log(v.slice(0, 6000));
             }
 
-            const fn1 = await aw('GET', '/functions/' + FN);
-            const vars = (fn1.json && fn1.json.vars) || [];
-            console.log('vars after restore:', vars.map((v) => v.key).join(',') || '<none>');
-            const haveAll = targets.every((t) => vars.some((v) => v.key === t.key));
-            console.log('all three present:', haveAll);
-            if (!haveAll) { console.log('DONE'); process.exit(1); }
-
-            // Trigger immediately if the key allows it; schedule covers otherwise.
-            const trig = await aw('POST', '/functions/' + FN + '/executions', {});
-            console.log('manual trigger -> ' + brief(trig));
-
-            const deadline = Date.now() + 6.5 * 60 * 1000;
-            let verified = false;
-            while (Date.now() < deadline && !verified) {
-              await sleep(20000);
-              const ex = await aw('GET', '/functions/' + FN + '/executions?limit=5&query=' +
-                encodeURIComponent(JSON.stringify({ method: 'orderDesc', attribute: 'createdAt', values: [] })));
-              const list = (ex.json && ex.json.executions) || [];
-              for (const e of list.filter((x) => x.$createdAt > restoreStart)) {
-                const d = await aw('GET', '/functions/' + FN + '/executions/' + e.$id);
-                const out = String((d.json && (d.json.logs || d.json.stdout)) || '');
-                if (!out) continue;
-                console.log('EXEC ' + e.$createdAt + ' trigger=' + e.trigger + ':');
-                console.log(out.slice(0, 2500));
-                const bad403 = /"status":403|VapidPkHashMismatch|do not correspond/.test(out);
-                const fatal = /FATAL:|Missing required/.test(out);
-                const m = out.match(/"sent":(\d+)/);
-                const sent = m ? Number(m[1]) : 0;
-                if (fatal) console.log('function still failing env check');
-                else if (bad403) console.log('STILL VAPID MISMATCH');
-                else if (sent > 0) { console.log('FIX VERIFIED: sent=' + sent + ', no VAPID mismatches'); verified = true; }
-                else { console.log('ran clean but sent=0 (queue empty or all skipped)'); verified = true; }
-                break;
-              }
+            // 2. Newest notificationLog rows (default order is ascending).
+            const l = await aw('GET', '/tablesdb/' + DB + '/tables/notificationLog/rows?limit=60');
+            const lrows = (l.json && l.json.rows) || [];
+            console.log('NOTIFICATIONLOG total=' + (l.json && l.json.total) + ' showing last 15:');
+            for (const r of lrows.slice(-15)) {
+              console.log('  L ' + r.$createdAt + ' status=' + r.status + ' error=' + (r.error || '-') +
+                ' notif=' + String(r.notificationId || '').slice(0, 28) + ' sub=' + String(r.subscriptionId || '').slice(0, 24));
             }
-            if (!verified) console.log('NOT VERIFIED in window — check the next scheduled run');
+
+            // 3. Newest notifications — pushState distribution at the tail.
+            const n = await aw('GET', '/tablesdb/' + DB + '/tables/notifications/rows?limit=60');
+            const nrows = (n.json && n.json.rows) || [];
+            console.log('NOTIFICATIONS total=' + (n.json && n.json.total) + ' last 15:');
+            for (const r of nrows.slice(-15)) {
+              console.log('  N ' + r.$createdAt + ' type=' + r.type + ' pushState=' + r.pushState +
+                ' attempts=' + (r.pushAttempts === undefined ? '-' : r.pushAttempts) +
+                ' lastErr=' + (r.pushLastError === undefined ? '-' : String(r.pushLastError).slice(0, 60)));
+            }
+
             console.log('DONE');
           })().catch((e) => {
             console.error('FAILED:', e.message);

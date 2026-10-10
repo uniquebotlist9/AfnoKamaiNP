@@ -8,7 +8,7 @@ serviceAccount.json
 .vscode/
 .DS_Store
 
-# ── Credentials that must never reach this repository ────────────────
+# Credentials that must never reach this repository
 serviceAccount*.json
 *service-account*.json
 *-serviceaccount*.json
@@ -24,8 +24,10 @@ vapid*.key
 SECRETS*.txt
 *DO-NOT-COMMIT*
 
-# ── Local tooling / temp ─────────────────────────────────────────────
+# Local tooling / temp
 .firebase/
 .tmp-awdump/
 .zcodeignore
 ziGoysqu
+.opencode/
+opencode.jsonc

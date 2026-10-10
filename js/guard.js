@@ -175,6 +175,28 @@ function readCachedProfile(uid) {
 const ACTIVE_UID_KEY = 'ak_profile_uid';
 
 /**
+ * "The last boot reached the dashboard with a verified, complete profile."
+ *
+ * The instant-routing script in the <head> of every pre-app page reads this
+ * synchronously (before a single stylesheet, font or module is requested) and
+ * jumps straight to /dashboard — otherwise a signed-in visitor pays a full
+ * document + module-graph + auth round trip just to be redirected back, which
+ * is exactly the latency the fast path exists to remove.
+ *
+ * requireAppAccess()/destinationFor() are the only writers: the flag is set
+ * only once the whole chain has passed and cleared on every redirect branch,
+ * so the fast path can short-circuit the boot but never skip a registration
+ * step (verify email, profile setup, PIN).
+ */
+const BOOT_READY_KEY = 'ak_boot_ready';
+function setBootReady(ready) {
+  try {
+    if (ready) localStorage.setItem(BOOT_READY_KEY, '1');
+    else localStorage.removeItem(BOOT_READY_KEY);
+  } catch (_) { /* private mode / storage disabled: fast path simply stays off */ }
+}
+
+/**
  * The last signed-in account's profile, read synchronously. Shells use this
  * to paint their chrome immediately instead of waiting out Firebase Auth's
  * first emission (an accounts:lookup round-trip that used to hold the splash
@@ -202,24 +224,32 @@ async function loadProfileSmart(uid) {
 
 /** Decide where an authenticated user belongs in the registration chain. */
 export function destinationFor(user, profile) {
-  if (!user) return R('login');
+  let dest;
+  if (!user) dest = R('login');
   // Check Appwrite user document's emailVerified first (programmatically settable),
   // fall back to Firebase Auth's emailVerified.
-  const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
-  const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
-  const emailVerifiedFromFirebase = user.emailVerified;
-  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) return R('verify-email');
-  if (!profile) return R('profile-setup');
-  if (!profile.profileComplete) return R('profile-setup');
-  if (!profile.pinSetAt) return R('profile-setup#pin');
-  return R('dashboard');
+  else {
+    const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
+    const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
+    const emailVerifiedFromFirebase = user.emailVerified;
+    if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) dest = R('verify-email');
+    else if (!profile) dest = R('profile-setup');
+    else if (!profile.profileComplete) dest = R('profile-setup');
+    else if (!profile.pinSetAt) dest = R('profile-setup#pin');
+    else dest = R('dashboard');
+  }
+  // Sync the fast-path flag with this verdict: only a finished chain arms it,
+  // anything else (signed out, unverified, setup pending) disarms it so the
+  // head script stops short-circuiting into a page the user hasn't earned yet.
+  setBootReady(dest === R('dashboard'));
+  return dest;
 }
 
 /** For index.html: route whichever way the visitor belongs. */
 export async function routeOnBoot({ onStage = () => {} } = {}) {
   onStage('Checking your session…');
   const user = await waitForAuth();
-  if (!user) { location.replace(R('login')); return; }
+  if (!user) { setBootReady(false); location.replace(R('login')); return; }
   onStage('Loading your account…');
   const profile = await loadProfileSmart(user.uid);
   location.replace(destinationFor(user, profile));
@@ -267,7 +297,7 @@ async function retryDeferredReferral() {
  */
 export async function requireAppAccess() {
   const user = await waitForAuth();
-  if (!user) { location.replace(R('login')); throw redirectSignal(); }
+  if (!user) { setBootReady(false); location.replace(R('login')); throw redirectSignal(); }
 
   let profile = readCachedProfile(user.uid);
   if (profile) {
@@ -289,11 +319,15 @@ export async function requireAppAccess() {
   const appwriteDoc = profile; // fetchProfile already returns { id, ...data } including emailVerified
   const emailVerifiedFromAppwrite = appwriteDoc && appwriteDoc.emailVerified === true;
   const emailVerifiedFromFirebase = user.emailVerified;
-  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) { location.replace(R('verify-email')); throw redirectSignal(); }
+  if (!(emailVerifiedFromAppwrite || emailVerifiedFromFirebase)) { setBootReady(false); location.replace(R('verify-email')); throw redirectSignal(); }
   if (!profile || !profile.profileComplete || !profile.pinSetAt) {
+    setBootReady(false);
     location.replace(R('profile-setup')); throw redirectSignal();
   }
   retryDeferredReferral();
+  // Whole chain passed: arm the fast path so the next document (from any
+  // pre-app page) can jump straight here without re-walking the boot.
+  setBootReady(true);
   return { user, profile };
 }
 
@@ -321,6 +355,7 @@ export async function requireAdminAccess() {
  */
 const ACCOUNT_SCOPED_KEYS = [
   'ak_remember_email',        // js/pages/login.js — remembered email
+  'ak_boot_ready',            // js/guard.js — fast-path "chain complete" flag
   'ak_chart_stats',           // js/pages/admin/index.js — cached admin revenue/stats
   'ak_last_sweep',            // js/admin-shell.js — admin hold-release sweep stamp
   'ak_push_last_endpoint',    // js/push.js — push subscription endpoint of last user

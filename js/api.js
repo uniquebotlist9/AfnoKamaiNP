@@ -23,7 +23,8 @@ const updateDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsUpdateDoc(..
 const addDoc = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsAddDoc(...a));
 const runTransaction = (...a) => withDeadline(WRITE_DEADLINE_MS, () => fsRunTransaction(...a));
 const writeBatch = (...a) => boundBatch(fsWriteBatch(...a));
-import { hashPin, pinProof, PIN_META, isPin4, isWeakPin } from './pin.js';
+import { isPin4, isWeakPin } from './pin.js';
+import { invokeAction } from './appwrite.js';
 import { isEmail, isNepaliPhone, isValidName } from './utils.js';
 import { generateCode } from './referral.js';
 
@@ -31,6 +32,20 @@ function requireAuth() {
   const user = auth.currentUser;
   if (!user) throw new Error('You must be logged in.');
   return user;
+}
+
+/**
+ * A URL-safe random token of `n` bytes (16 → 32 chars), for bridge actions
+ * that want a stable idempotency key. Every byte maps to [A-Za-z0-9_-], which
+ * is exactly the alphabet `requestId` is validated against.
+ */
+function bytesToUrlSafe(n) {
+  const bytes = new Uint8Array(n);
+  crypto.getRandomValues(bytes);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let out = '';
+  for (const b of bytes) out += alphabet[b & 63];
+  return out;
 }
 
 function ruleError(e, fallback) {
@@ -52,6 +67,18 @@ function ruleError(e, fallback) {
   // person on the other end of the UI, so it is logged rather than shown.
   console.warn('[ruleError]', code || '(no code)', (e && e.message) || e);
   return new Error(fallback || 'Something went wrong. Please try again.');
+}
+
+/**
+ * Errors from a dedicated bridge action (`set-pin`, `request-withdrawal`)
+ * already carry user-facing wording — "Sign in again before changing your
+ * PIN.", "A verified, active, complete profile is required." — so prefer the
+ * bridge's own message. Only transport failures (no `.status`) fall back to
+ * ruleError's offline / index mapping.
+ */
+function actionError(e, fallback) {
+  if (e && e.status && e.message) return new Error(e.message);
+  return ruleError(e, fallback);
 }
 
 /** Create users/{uid} + wallets/{uid} if a previous signup was interrupted. */
@@ -173,71 +200,40 @@ export async function completeProfile({ fullName, phone }) {
   return { ok: true };
 }
 
-/** Step 2 of setup: security PIN — hash is write-only (never readable). */
+/** Step 2 of setup: security PIN — hashed server-side, write-only (never readable). */
 export async function setPin({ pin }) {
-  const user = requireAuth();
+  requireAuth();
   if (!isPin4(pin)) throw new Error('The security PIN must be exactly 4 digits.');
   if (isWeakPin(pin)) throw new Error('That PIN is too easy to guess. Avoid repeated digits and sequences.');
-  const { salt, hash } = await hashPin(pin);
-  const writeAll = () => {
-    const batch = writeBatch(db);
-    batch.update(doc(db, 'users', user.uid), {
-      pinSalt: salt,
-      pinSetAt: serverTimestamp()
-    });
-    batch.set(doc(db, 'users', user.uid, 'private', 'pin'), {
-      pinHash: hash,
-      pinAlgo: PIN_META.algo,
-      pinIterations: PIN_META.iterations
-    });
-    return batch.commit();
-  };
-  // Same trap as completeProfile: the rules read users/{uid} before allowing
-  // this batch, so a document that signup never created is reported as
-  // permission-denied and would never reach a `not-found` heal. Create first.
-  if (!(await readProfileState(user)).exists) await ensureUserDocs(user);
+  // The bridge owns the salt and the PBKDF2 hash: it writes userPins/{uid} and
+  // users.{pinSalt,pinSetAt} itself inside one native transaction. The generic
+  // `write` action rejects both (userPins is immutable; PIN metadata is
+  // endpoint-managed), so hashing here would only burn a rate-limit attempt.
   try {
-    await writeAll();
+    await invokeAction({ action: 'set-pin', pin });
   } catch (e) {
     console.warn('[setPin] failed:', e && e.code, e && e.message);
-    const code = String(e.code);
-    if (code === 'not-found' || code === 'permission-denied') {
-      try {
-        await ensureUserDocs(user);
-        await writeAll();
-      } catch (e2) {
-        console.warn('[setPin] retry failed:', e2 && e2.code, e2 && e2.message);
-        const s = await readProfileState(user);
-        if (!s.exists) {
-          throw new Error("We couldn't find your account. Please sign out, sign in again and retry — or contact support.");
-        }
-        if (s.status !== 'active') {
-          throw new Error('Your account is currently restricted, so setup is on hold. Please contact support.');
-        }
-        throw ruleError(e2, 'Could not set your PIN. Please try again.');
-      }
-    } else {
-      throw ruleError(e, 'Could not set your PIN. Please try again.');
-    }
+    throw actionError(e, 'Could not set your PIN. Please try again.');
   }
   return { ok: true };
 }
 
-/** Change PIN (the profile page requires a fresh Firebase login first). */
+/**
+ * Change PIN (the profile page requires a fresh Firebase login first).
+ *
+ * The bridge refuses a change on a stale token — an existing PIN always needs
+ * an auth_time inside the last five minutes — which is exactly why that page
+ * forces a re-login before showing this form.
+ */
 export async function changePin({ newPin }) {
-  const user = requireAuth();
+  requireAuth();
   if (!isPin4(newPin)) throw new Error('The security PIN must be exactly 4 digits.');
   if (isWeakPin(newPin)) throw new Error('That PIN is too easy to guess.');
-  const { salt, hash } = await hashPin(newPin);
   try {
-    const batch = writeBatch(db);
-    batch.update(doc(db, 'users', user.uid), { pinSalt: salt, pinSetAt: serverTimestamp() });
-    batch.set(doc(db, 'users', user.uid, 'private', 'pin'), {
-      pinHash: hash, pinAlgo: PIN_META.algo, pinIterations: PIN_META.iterations
-    });
-    await batch.commit();
+    await invokeAction({ action: 'set-pin', pin: newPin });
   } catch (e) {
-    throw ruleError(e, 'Could not change your PIN. Please try again.');
+    console.warn('[changePin] failed:', e && e.code, e && e.message);
+    throw actionError(e, 'Could not change your PIN. Please try again.');
   }
   return { ok: true };
 }
@@ -381,17 +377,6 @@ const MIN_APPROVED_TASKS = 50;
 
 export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, pin }) {
   const user = requireAuth();
-  // Check Appwrite user document's emailVerified first (programmatically settable),
-  // fall back to Firebase Auth's emailVerified.
-  if (!user.emailVerified) {
-    try {
-      const meSnap = await getDoc(doc(db, 'users', user.uid));
-      const me = meSnap.data() || {};
-      if (!me.emailVerified) throw new Error('Please verify your email address first.');
-    } catch (_) {
-      // If we can't read the Appwrite doc, the Firebase check below will catch it.
-    }
-  }
   const amount = Number(amountPaisa);
   const name = String(esewaName || '').trim().replace(/\s+/g, ' ');
   const number = String(esewaNumber || '').replace(/[\s-]/g, '');
@@ -402,49 +387,39 @@ export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, p
 
   const meSnap = await getDoc(doc(db, 'users', user.uid));
   const me = meSnap.data() || {};
+  // Prefer the Appwrite doc's flag (programmatically settable), fall back to
+  // Firebase Auth. Checked here only for a friendly message — the bridge
+  // re-checks the token's own email_verified claim before it will act.
+  if (!(me.emailVerified || user.emailVerified)) throw new Error('Please verify your email address first.');
+
   const approvedCount = Number(me.stats?.approved) || 0;
   if (approvedCount < MIN_APPROVED_TASKS) {
     throw new Error(`You need at least ${MIN_APPROVED_TASKS} approved tasks to withdraw — you currently have ${approvedCount}.`);
   }
-  const salt = me.pinSalt;
-  if (!salt) throw new Error('No security PIN is set on your account.');
-  const proof = await pinProof(pin, salt);
+  if (!me.pinSetAt) throw new Error('No security PIN is set on your account.');
 
-  const wRef = doc(collection(db, 'withdrawals'));
-  const lockRef = doc(db, 'activeWithdrawals', user.uid);
+  // The bridge derives the withdrawal id from sha256(uid:requestId), so a
+  // retry of this same submission (e.g. the 401 token refresh inside
+  // invokeAction) resolves to one row instead of two. The bridge also holds
+  // an activeWithdrawals lock, so a later resubmission is refused outright.
+  const requestId = bytesToUrlSafe(16);
 
   try {
-    await runTransaction(db, async (tx) => {
-      const lock = await tx.get(lockRef);
-      if (lock.exists()) {
-        throw new Error('You already have a withdrawal being processed. Wait for it to complete or be rejected.');
-      }
-      tx.set(wRef, {
-        userId: user.uid,
-        userName: me.fullName || '',
-        userEmail: (user.email || '').toLowerCase(),
-        amountPaisa: amount,
-        esewaName: name,
-        esewaNumber: number,
-        status: 'pending',
-        pinProof: proof,
-        pinProofAlgo: PIN_META.algo,
-        pinIterations: PIN_META.iterations,
-        pinSaltUsed: salt,
-        requestedAt: serverTimestamp(),
-        reviewedAt: null, reviewedBy: null, reviewedByName: null,
-        reason: '',
-        txId: ''
-      });
-      tx.set(lockRef, {
-        withdrawalId: wRef.id,
-        amountPaisa: amount,
-        createdAt: serverTimestamp()
-      });
+    // The bridge verifies the PIN against the row it hashed, applies the
+    // wallet/hold eligibility rules and writes the withdrawal plus its lock in
+    // one native transaction, attesting the row with a server HMAC the client
+    // can neither read nor forge. Generic `write` cannot express this.
+    await invokeAction({
+      action: 'request-withdrawal',
+      amountPaisa: amount,
+      esewaName: name,
+      esewaNumber: number,
+      requestId,
+      pin
     });
   } catch (e) {
-    if (e.message && !String(e.code)) throw e;
-    throw ruleError(e, 'Could not submit the withdrawal. Please try again.');
+    console.warn('[requestWithdrawal] failed:', e && e.code, e && e.message);
+    throw actionError(e, 'Could not submit the withdrawal. Please try again.');
   }
-  return { ok: true, withdrawalId: wRef.id };
+  return { ok: true };
 }

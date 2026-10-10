@@ -213,6 +213,35 @@ export async function mountAdminShell(pageId) {
   // snapshots are true deltas (this listener stays attached across tab
   // switches), so a message arriving while the tab is hidden still toasts on
   // the first tick after return.
+  // A new-message chime. Synthesised through WebAudio rather than an .mp3 so
+  // it costs no request, starts instantly, and can never 404 — and the admin
+  // hears it the moment a user writes, instead of noticing the badge later.
+  // Browsers only permit audio after a user gesture; before that this is a
+  // silent no-op rather than a rejection.
+  let chimeCtx = null;
+  function playChime() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!chimeCtx) chimeCtx = new AC();
+      if (chimeCtx.state === 'suspended') chimeCtx.resume().catch(() => {});
+      const now = chimeCtx.currentTime;
+      [880, 1318.5].forEach((freq, i) => {
+        const osc = chimeCtx.createOscillator();
+        const gain = chimeCtx.createGain();
+        const t = now + i * 0.14;
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.16, t + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+        osc.connect(gain).connect(chimeCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.32);
+      });
+    } catch (_) { /* audio is best-effort and must never break the shell */ }
+  }
+
   let chatsFirstSnap = true;
   const onChatsPage = () => /\/admin\/chats(\.html)?$/i.test(location.pathname);
   const badgeDefs = [
@@ -237,11 +266,17 @@ export async function mountAdminShell(pageId) {
         });
         if (b.key === 'chats') {
           if (chatsFirstSnap) chatsFirstSnap = false;
-          else if (!onChatsPage()) {
+          else {
             for (const ch of snap.docChanges()) {
               if (ch.type !== 'added') continue;
               const c = ch.doc.data() || {};
               if (c.lastSenderRole !== 'user') continue;
+              // Sound on EVERY page — an admin with the panel open hears a
+              // user write immediately, even where the live list already
+              // shows the row. The toast stays suppressed on the chats page,
+              // where it would only repeat what is on screen.
+              playChime();
+              if (onChatsPage()) continue;
               const who = c.userName || c.userEmail || 'a user';
               toast(`New message from ${who}`, {
                 title: 'Chats',

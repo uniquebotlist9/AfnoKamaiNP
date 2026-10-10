@@ -202,23 +202,31 @@ async function verifyPinStatus(cell, w) {
       cell.innerHTML = pinCache.get(w.id);
       return;
     }
-    const [meSnap, pinSnap] = await Promise.all([
-      getDoc(doc(db, 'users', w.userId)),
-      getDoc(doc(db, 'users', w.userId, 'private', 'pin'))
-    ]);
     let html;
-    if (!meSnap.exists() || !pinSnap.exists() || !pinSnap.data().pinHash) {
-      html = '<span class="badge tone-gray">No PIN</span>';
+    if (w.pinProofAlgo === 'server-verified-v1') {
+      // The bridge verified the PIN at request time and attested the row with
+      // a server HMAC: pinProof is NOT a copy of the stored hash, so comparing
+      // them here would report a false mismatch on every valid request. The
+      // admin approval path re-verifies that attestation server-side anyway.
+      html = '<span class="badge tone-green" title="PIN verified by the server when this withdrawal was requested; the attestation is re-checked on approval">' + icon('check') + ' Verified</span>';
     } else {
-      const hash = pinSnap.data().pinHash;
-      const saltAtRequest = w.pinSaltUsed;
-      const currentSalt = meSnap.data().pinSalt;
-      if (currentSalt && saltAtRequest && currentSalt !== saltAtRequest) {
-        html = '<span class="badge tone-amber">PIN changed after request</span>';
-      } else if (hash === w.pinProof) {
-        html = '<span class="badge tone-green" title="PBKDF2 proof matches the stored hash">' + icon('check') + ' Verified</span>';
+      const [meSnap, pinSnap] = await Promise.all([
+        getDoc(doc(db, 'users', w.userId)),
+        getDoc(doc(db, 'users', w.userId, 'private', 'pin'))
+      ]);
+      if (!meSnap.exists() || !pinSnap.exists() || !pinSnap.data().pinHash) {
+        html = '<span class="badge tone-gray">No PIN</span>';
       } else {
-        html = '<span class="badge tone-red" title="The PIN proof in the request does not match the stored hash">' + icon('x') + ' Mismatch</span>';
+        const hash = pinSnap.data().pinHash;
+        const saltAtRequest = w.pinSaltUsed;
+        const currentSalt = meSnap.data().pinSalt;
+        if (currentSalt && saltAtRequest && currentSalt !== saltAtRequest) {
+          html = '<span class="badge tone-amber">PIN changed after request</span>';
+        } else if (hash === w.pinProof) {
+          html = '<span class="badge tone-green" title="PBKDF2 proof matches the stored hash">' + icon('check') + ' Verified</span>';
+        } else {
+          html = '<span class="badge tone-red" title="The PIN proof in the request does not match the stored hash">' + icon('x') + ' Mismatch</span>';
+        }
       }
     }
     pinCache.set(w.id, html);

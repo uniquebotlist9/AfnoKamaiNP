@@ -28,12 +28,9 @@
   <link rel="icon" type="image/svg+xml" href="/assets/icon.svg">
   <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
   <link rel="manifest" href="../manifest.json">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
   <link rel="preconnect" href="https://sgp.cloud.appwrite.io" crossorigin>
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
-  <link rel="stylesheet" media="print" data-akfonts href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Devanagari:wght@400;600&display=swap">
+  <link rel="stylesheet" media="print" data-akfonts href="../css/fonts.css?v=1">
   <script>try{var t=localStorage.getItem('ak_theme');if(t==='dark'||((!t||t==='system')&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.dataset.theme='dark';}catch(e){}</script>
   <link rel="stylesheet" href="../css/global.css?v=6">
   <link rel="stylesheet" href="../css/app.css?v=7">
@@ -68,7 +65,7 @@
   <link rel="modulepreload" href="/js/install-popup.js" crossorigin>
   <script type="module" src="../js/pages/admin/users.js?v=6"></script>
   <script>
-(function(){var a=document.querySelectorAll('link[data-akfonts]');for(var i=0;i<a.length;i++){(function(l){if(l.sheet){l.media='all';return}l.addEventListener('load',function(){l.media='all'})})(a[i])}})();
+(function(){var a=document.querySelectorAll('link[data-akfonts],link[data-akcss]');for(var i=0;i<a.length;i++){(function(l){if(l.sheet){l.media='all';return}l.addEventListener('load',function(){l.media='all'})})(a[i])}})();(function(){addEventListener('load',function(){if('serviceWorker'in navigator&&!['localhost','127.0.0.1'].includes(location.hostname))navigator.serviceWorker.register('/sw.js').catch(function(){})})})();
 (function(){setTimeout(function(){var s=document.getElementById('ak-splash')||document.getElementById('boot-screen');if(!s||s.dataset.slow||s.querySelector('button'))return;var m=document.getElementById('ak-splash-msg');if(m)m.textContent='This is taking longer than usual';var b=document.createElement('button');b.textContent='Tap to retry';b.style.cssText='margin-top:18px;padding:10px 20px;border:0;border-radius:10px;background:#12996B;color:#fff;font:600 14px system-ui,-apple-system,sans-serif;cursor:pointer';b.addEventListener('click',function(){location.reload()});s.appendChild(b)},9000)})();
 </script>
 </head>

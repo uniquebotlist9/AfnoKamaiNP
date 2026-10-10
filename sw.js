@@ -6,9 +6,10 @@
    site is closed. They only ever *display*; the subscription document is
    owned by the page (js/push.js) because Firestore auth does not exist
    inside a service worker. */
-const CACHE = 'afnokamai-v14';
+const CACHE = 'afnokamai-v15';
 const ASSETS = [
   'assets/icon.svg',
+  'css/fonts.css?v=1',
   'css/global.css?v=6',
   'css/auth.css?v=2',
   'css/app.css?v=7',

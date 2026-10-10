@@ -262,6 +262,44 @@ export async function ensureAppwriteSession(user, force) {
 }
 
 /**
+ * Read a row's current `$updatedAt` (its optimistic-concurrency version) with
+ * the caller's own session, or `null` when the row does not exist yet.
+ *
+ * The deployed write proxy runs every batch inside a native transaction and
+ * requires the client to declare, for each row it writes, the version it based
+ * the write on. A row that changed underneath the write makes the transaction
+ * abort with a conflict instead of silently clobbering the newer data. Query
+ * by `$id` (rather than a direct GET) so a missing row is a clean empty result
+ * instead of a 404, exactly like js/appwrite-db.js's read path.
+ */
+async function readRowVersion(table, rowId) {
+  const q = { method: 'equal', attribute: '$id', values: [rowId] };
+  const params = `queries[0]=${encodeURIComponent(JSON.stringify(q))}&limit=1`;
+  try {
+    const res = await api('GET', `/tablesdb/${APPWRITE_DATABASE_ID}/tables/${table}/rows?${params}`);
+    const rows = res.rows || res.documents || res.data || [];
+    return rows[0] ? (rows[0].$updatedAt || null) : null;
+  } catch (e) {
+    if (e && e.code === 'not-found') return null;
+    throw e;
+  }
+}
+
+/** One read dependency per distinct row the batch touches (null when absent). */
+async function collectReadVersions(ops) {
+  const seen = new Set();
+  const deps = [];
+  for (const op of ops) {
+    if (!op || typeof op.table !== 'string' || typeof op.rowId !== 'string') continue;
+    const key = op.table + '/' + op.rowId;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deps.push({ table: op.table, rowId: op.rowId, updatedAt: await readRowVersion(op.table, op.rowId) });
+  }
+  return deps;
+}
+
+/**
  * The write proxy: the only way this app mutates a row.
  *
  * `ops` is a list of `{ op, table, rowId, data }` — normally one entry, but a
@@ -270,6 +308,10 @@ export async function ensureAppwriteSession(user, force) {
  * AFTER the batch, so the Function has to see every operation before it
  * validates any of them. It also means a batch is all-or-nothing, which
  * Firestore's WriteBatch was and our sequential fallback was not.
+ *
+ * Each written row is paired with a read dependency (`reads`) declaring the
+ * `$updatedAt` this write was based on, so the Function can run the batch in a
+ * native transaction and abort on a concurrent change rather than clobber it.
  *
  * The Firebase ID token travels in the body because the Appwrite execution
  * API does not forward arbitrary request headers reliably.
@@ -286,12 +328,63 @@ export async function executeWrite(ops) {
     throw err;
   }
   const list = Array.isArray(ops) ? ops : [ops];
-  const payload = { action: 'write', ops: list };
 
   let attempt = 0;
+  let conflicts = 0;
   for (;;) {
+    // Fresh read versions on every attempt: the proxy validates the batch
+    // against them inside its transaction, and a conflict (409) means one of
+    // the rows moved underneath us — re-read and try again before giving up.
+    const reads = await collectReadVersions(list);
+    const payload = { action: 'write', ops: list, reads };
+
     // forceRefresh on the second pass: a rejected token is usually an
     // expired one, and getIdToken(true) mints a fresh copy.
+    const idToken = await bridgeUser.getIdToken(attempt > 0);
+    let out;
+    try {
+      out = await invokeFunction(Object.assign({}, payload, { idToken }));
+    } catch (e) {
+      if (e && e.status === 401 && attempt === 0) { attempt += 1; continue; }
+      throw e;
+    }
+    const { status, body } = parseExecution(out);
+    if (status === 401 && attempt === 0) { attempt += 1; continue; }
+    if (status === 409 && conflicts < 2) {
+      conflicts += 1;
+      await new Promise((r) => setTimeout(r, 40 * conflicts + Math.random() * 60));
+      continue;
+    }
+    if (status >= 300) throw executionError(status, body);
+    return body;
+  }
+}
+
+/**
+ * Invoke a dedicated bridge action (`set-pin`, `request-withdrawal`).
+ *
+ * These flows are validated and executed entirely server-side by the bridge
+ * (see functions/bridge/src/secure-actions.js): it owns the PIN salt and the
+ * PBKDF2 hash, and it mints the withdrawal attestation with a secret the
+ * browser never sees. The generic `write` action rejects userPins and PIN
+ * metadata outright, so these must never route through executeWrite().
+ *
+ * Like executeWrite, the Firebase ID token travels in the body and a 401 is
+ * retried once with a freshly minted token.
+ */
+export async function invokeAction(payload) {
+  if (!APPWRITE_AUTH_FUNCTION_ID) {
+    const err = new Error('This action is unavailable right now. Please try again shortly.');
+    err.code = 'failed-precondition';
+    throw err;
+  }
+  if (!bridgeUser) {
+    const err = new Error('You must be signed in to do that.');
+    err.code = 'permission-denied';
+    throw err;
+  }
+  let attempt = 0;
+  for (;;) {
     const idToken = await bridgeUser.getIdToken(attempt > 0);
     let out;
     try {

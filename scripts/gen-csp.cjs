@@ -27,21 +27,28 @@ const STATIC_DIRECTIVES = [
   "object-src 'none'",
   "frame-ancestors 'self'",
   "form-action 'self'",
-  // 'self' + the two CDNs the markup actually loads: gstatic (Firebase SDKs)
-  // and jsdelivr (Chart.js). Hashes cover the inline scripts.
-  "script-src 'self' https://www.gstatic.com https://cdn.jsdelivr.net",
+  // 'self' + the CDN the markup actually loads: gstatic (Firebase SDKs).
+  // Chart.js is vendored at assets/vendor/chart.umd.min.js, so jsdelivr —
+  // the only other host that ever appeared here — is gone from the policy.
+  // Hashes cover the inline scripts.
+  "script-src 'self' https://www.gstatic.com",
   // 'unsafe-inline' is required here for the inline style="" attributes used
-  // throughout the templates; it does NOT weaken script-src.
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-  "font-src 'self' data: https://fonts.gstatic.com",
+  // throughout the templates; it does NOT weaken script-src. The fonts are
+  // self-hosted now (css/fonts.css), so fonts.googleapis.com is gone.
+  "style-src 'self' 'unsafe-inline'",
+  // woff2 files live in assets/fonts/ — no fonts.gstatic.com either.
+  "font-src 'self' data:",
   // data: — chat attachments are stored inline as data URLs.
   "img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com",
   // googleapis covers Identity Toolkit, token refresh and installations;
   // cloudfunctions covers the optional backend; sgp.cloud.appwrite.io is the
   // database (and the auth-bridge/write-proxy Function invocation).
+  // gstatic is in the deployed policy too (kept in sync by hand historically):
+  // the Firebase SDKs it hosts answer from the same origin family.
   "connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net " +
     "https://sgp.cloud.appwrite.io " +
-    "https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com",
+    "https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com " +
+    "https://www.gstatic.com",
   "worker-src 'self' blob:",
   "frame-src 'self' https://*.firebaseapp.com",
   "manifest-src 'self'",
@@ -62,9 +69,19 @@ function htmlFiles(dir, out = []) {
   return out;
 }
 
-/** SHA-256 (base64) CSP hash for one inline script body, CSP-style. */
+/**
+ * SHA-256 (base64) CSP hash for one inline script body, CSP-style.
+ *
+ * The body must be hashed the way the BROWSER sees it: the HTML parser
+ * normalizes line endings (CRLF and lone CR -> LF) before the script text
+ * exists, so hashing the raw file bytes would produce a hash for a string
+ * that never reaches the engine — and Chrome would report a violation even
+ * though the same script is "in" the policy. This repo has mixed LF/CRLF
+ * files, which is exactly how that bit us once already.
+ */
 function hashOf(body) {
-  return "'sha256-" + crypto.createHash('sha256').update(body, 'utf8').digest('base64') + "'";
+  const normalized = body.replace(/\r\n?/g, '\n');
+  return "'sha256-" + crypto.createHash('sha256').update(normalized, 'utf8').digest('base64') + "'";
 }
 
 function collectHashes() {

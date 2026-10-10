@@ -1,0 +1,27 @@
+name: Website regression checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - run: npm ci
+        working-directory: scripts
+      - run: npm ci
+        working-directory: functions/push-fn
+      - run: npm run check
+        working-directory: scripts
+      - run: npm audit --omit=dev
+        working-directory: scripts
+      - run: npm audit --omit=dev
+        working-directory: functions/push-fn

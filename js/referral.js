@@ -532,7 +532,12 @@ export async function finalizeReferral(rawCode) {
       searchText: `${notifTitle} ${notifBody}`.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 400),
       title: notifTitle,
       body: notifBody,
-      link: 'referral',
+      // The bridge pins this alert's link to the real page path (every other
+      // notification uses the extensionless route name). Sending 'referral'
+      // fails the whole atomic batch — the referral relationship, the joined
+      // event and this alert all land together or not at all — so attribution
+      // would silently never happen for anyone.
+      link: 'referral.html',
       tone: 'green',
       icon: 'users',
       // Pinned to the document id: firestore.rules requires the idempotency

@@ -71,7 +71,7 @@
           },
           {
             "key": "Content-Security-Policy",
-            "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://www.gstatic.com 'sha256-tgUs40KIzf5vZtrG+P0ySvg0RponnNo0Ni6MjnRUvv8=' 'sha256-7bkbyg01U6pjGnmS9H+0TcreI5EPwX3DgSJ91zpFAz8=' 'sha256-vKufpIIOELBUnyRRaMvnyc2XF+fgiCovpv8EgMrzkpQ='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://sgp.cloud.appwrite.io https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://www.gstatic.com; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com; manifest-src 'self'; media-src 'self' data: blob:; upgrade-insecure-requests"
+            "value": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' https://www.gstatic.com 'sha256-s9En4PYJcK4fbOMH/TROVHyGr9eF7CsHL5jr0TRr8Ss=' 'sha256-tgUs40KIzf5vZtrG+P0ySvg0RponnNo0Ni6MjnRUvv8=' 'sha256-vKufpIIOELBUnyRRaMvnyc2XF+fgiCovpv8EgMrzkpQ=' 'sha256-vwR+N7toKF0ME2oqNq+jQpj3m7NQ6Yh1RWxFtXMNYbA='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https://www.gstatic.com https://*.googleusercontent.com; connect-src 'self' https://*.googleapis.com https://*.cloudfunctions.net https://sgp.cloud.appwrite.io https://www.google-analytics.com https://analytics.google.com https://region1.google-analytics.com https://www.gstatic.com; worker-src 'self' blob:; frame-src 'self' https://*.firebaseapp.com; manifest-src 'self'; media-src 'self' data: blob:; upgrade-insecure-requests"
           }
         ]
       },
@@ -89,7 +89,7 @@
         "headers": [
           {
             "key": "Cache-Control",
-            "value": "public, max-age=3600"
+            "value": "public, max-age=3600, stale-while-revalidate=86400"
           }
         ]
       },

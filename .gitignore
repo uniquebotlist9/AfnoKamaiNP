@@ -4,9 +4,17 @@ node_modules/
 serviceAccount.json
 .env
 .env.*
+# The template is safe to commit (placeholders only) - keep it tracked
+!.env.example
 *.local
 .vscode/
+.idea/
+*.swp
+*.swo
 .DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
 
 # Credentials that must never reach this repository
 serviceAccount*.json
@@ -26,8 +34,16 @@ SECRETS*.txt
 
 # Local tooling / temp
 .firebase/
+.omnirush/
 .tmp-awdump/
 .zcodeignore
 ziGoysqu
 .opencode/
 opencode.jsonc
+
+# Build / cache artifacts
+dist/
+build/
+.cache/
+coverage/
+*.tsbuildinfo

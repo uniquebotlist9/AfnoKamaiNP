@@ -505,20 +505,40 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   }
 
   // ── read receipts ──
+  // Latest conversation doc. markRead needs it because unread counters can be
+  // bumped WITHOUT a message row: bumpAdminUnread() fires on a task request
+  // and on a submission, and only rewrites the conversation. Reading the
+  // counter (not just the message rows) is what lets the badge clear.
+  let convLatest = null;
+  const myUnreadKey = () => (role === 'user' ? 'unreadForUser' : 'unreadForAdmin');
+
   async function markRead(msgDocs) {
     try {
       const unreadOthers = msgDocs.filter((d) => {
         const m = d.data();
         return m.senderRole !== role && !m.readAt;
       });
-      if (!unreadOthers.length) return; // nothing to mark — avoid churning the conversation doc on every snapshot
+      // Reset the counter whenever it is still > 0, even if every message in
+      // the window is already stamped. Returning early on an empty filter is
+      // what left a badge on screen that opening the conversation never cleared.
+      //
+      // A counter-ONLY reset is only legal for an admin: the bridge requires a
+      // user-side `unreadForUser` drop to equal the incoming messages stamped
+      // as viewed in the same batch, so with nothing to stamp the compliant
+      // answer is to leave the counter alone — attempting it would just be
+      // rejected on every snapshot.
+      const counterStale = !!(convLatest && convLatest[myUnreadKey()] > 0);
+      const counterOnlyOk = role === 'admin';
+      if (!unreadOthers.length && !(counterStale && counterOnlyOk)) return; // nothing to mark — avoid churning the conversation doc on every snapshot
       const batch = writeBatch(db);
       unreadOthers.forEach((d) => batch.update(d.ref, { readAt: serverTimestamp() }));
       batch.update(doc(db, 'conversations', cid), {
-        [role === 'user' ? 'unreadForUser' : 'unreadForAdmin']: 0,
+        [myUnreadKey()]: 0,
         [role === 'user' ? 'userLastReadAt' : 'adminLastReadAt']: serverTimestamp()
       });
       await batch.commit();
+      // Reflect the reset locally so the next snapshot doesn't re-write it.
+      if (convLatest) convLatest = { ...convLatest, [myUnreadKey()]: 0 };
     } catch (_) { /* non-fatal */ }
   }
 
@@ -526,6 +546,12 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   let convTypingFresh = false;
   const convUnsub = subscribeWhileVisible(doc(db, 'conversations', cid), (snap) => {
     const c = snap.data() || {};
+    convLatest = c;
+    // The conversation doc is the other half of markRead: if it reports an
+    // unread counter and the thread is on screen, clear it now rather than
+    // waiting for the next message snapshot (which may never come, because a
+    // bump from a task event adds no message row).
+    if (c[myUnreadKey()] > 0) markRead(latestMsgDocs);
     const otherTyping = role === 'user' ? c.adminTyping : c.userTyping;
     const otherTypingAt = role === 'user' ? c.adminTypingAt : c.userTypingAt;
     convTypingFresh = !!(otherTyping && otherTypingAt && (Date.now() - otherTypingAt.toMillis()) < 6000);
@@ -725,7 +751,10 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
         ? 'Message blocked — you may be sending too quickly, or your account is restricted. Wait a moment, then tap Retry.'
         : (role === 'user'
           ? 'Message could not be sent. Check your connection, then tap Retry.'
-          : (err && err.message ? err.message : ''));
+          // An error with no message (a network drop, or a rejection that
+          // reaches us as a bare status) used to render a failed bubble with
+          // nothing but "Retry", leaving the admin guessing what happened.
+          : (err && err.message ? err.message : 'Message could not be sent. Check your connection, then tap Retry.'));
       renderAll();
       toast(pendingMsg.failText || 'Message could not be sent. Use Retry on the message.', { type: 'error' });
     }

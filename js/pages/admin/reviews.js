@@ -118,7 +118,11 @@ async function reviewModal(assignmentId) {
     if (!a) return;
     const st = ASSIGNMENT_STATUS[a.status] || { label: a.status, tone: 'gray' };
     const actions = [];
-    if (a.status === 'submitted' || a.status === 'under_review') {
+    // Only 'submitted' can be reviewed: reviewTask's approve/reject/clarify
+    // all guard on status === 'submitted'. 'under_review' is a withdrawal
+    // status that is never written to taskAssignments, so including it here
+    // offered buttons that could only ever throw "already reviewed".
+    if (a.status === 'submitted') {
       actions.push('<button class="btn danger" data-act="reject">Reject</button>');
       actions.push('<button class="btn ghost" data-act="clarify">Request clarification</button>');
       actions.push(`<button class="btn primary" data-act="approve">${icon('check')} Approve & hold ${esc(fmtNPR(a.rewardPaisa))}</button>`);

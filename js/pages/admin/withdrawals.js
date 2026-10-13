@@ -65,7 +65,9 @@ function actionsFor(w) {
     b.push(`<span class="badge tone-green">${icon('check')} Paid</span>`);
   }
   if (w.status === 'rejected') {
-    b.push(`<span class="small muted">Refunded to balance</span>`);
+    // The balance is only debited when a withdrawal is COMPLETED, so a
+    // rejection moves no money and needs no refund.
+    b.push(`<span class="small muted">Rejected — nothing was debited</span>`);
   }
   return b.join(' ');
 }
@@ -157,7 +159,7 @@ async function actOn(action, id) {
       title: 'Reject withdrawal',
       width: 460,
       body: `
-        <p class="confirm-msg">The amount will be refunded to the user's withdrawable balance and the user will see this reason.</p>
+        <p class="confirm-msg">The user's balance is untouched — it is only debited when a withdrawal is completed, so nothing needs to be refunded. The user will see this reason.</p>
         <textarea class="textarea" id="reason" placeholder="Why is this withdrawal rejected?"></textarea>`,
       actions: `
         <button class="btn ghost" data-act="cancel">Cancel</button>
@@ -180,7 +182,7 @@ async function perform(action, id, reason) {
   try {
     await reviewWithdrawal({ withdrawalId: id, action, reason });
     toast(action === 'completed' ? 'Withdrawal marked as completed.' :
-      action === 'rejected' ? 'Withdrawal rejected and refunded.' : 'Withdrawal marked as processing.',
+      action === 'rejected' ? 'Withdrawal rejected — the balance was never debited.' : 'Withdrawal marked as processing.',
       { type: 'success' });
     loadAll(true);
   } catch (err) {

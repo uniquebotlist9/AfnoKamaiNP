@@ -437,8 +437,11 @@ service cloud.firestore {
     }
 
     // Referral reward records — one per paid reward, deterministic IDs
-    // (REFERRAL_MILESTONE_{referrer}_{referred} / REFERRAL_TASK_..._{taskId})
-    // so retries and double-approvals can never create a duplicate.
+    // (REFERRAL_MILESTONE_{referrer}_{referred} / REFERRAL_TASK_..._{ledgerId})
+    // so retries and double-approvals can never create a duplicate. The
+    // suffix keys on the approval's ledger row, NOT the task id: the same
+    // task can legitimately be approved twice (it is re-requestable after a
+    // rejection), and keying on taskId silently skipped the second payout.
     match /referralRewards/{id} {
       allow get, list: if isAdmin() || (signedIn() && resource.data.referrerId == request.auth.uid);
       allow create, update, delete: if isAdmin(); // financial — admin-only

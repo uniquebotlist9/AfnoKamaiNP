@@ -334,8 +334,18 @@ export async function mountAdminShell(pageId) {
     const SWEEP_GAP = 15 * 60 * 1000;
     const lastSweep = Number(localStorage.getItem(SWEEP_KEY) || 0);
     if (Date.now() - lastSweep > SWEEP_GAP) {
-      localStorage.setItem(SWEEP_KEY, String(Date.now()));
-      sweepHolds().then((n) => { if (n > 0) console.info(`Hold sweep: released ${n} transaction(s)`); }).catch(() => {});
+      // Stamp only on SUCCESS. Stamping up front meant one failed sweep
+      // postponed every hold release for another 15 minutes with no retry.
+      // On failure we stamp a shorter cooldown instead, so it retries soon
+      // without re-firing the query on every single admin page load.
+      sweepHolds()
+        .then((n) => {
+          localStorage.setItem(SWEEP_KEY, String(Date.now()));
+          if (n > 0) console.info(`Hold sweep: released ${n} transaction(s)`);
+        })
+        .catch(() => {
+          localStorage.setItem(SWEEP_KEY, String(Date.now() - SWEEP_GAP + 2 * 60 * 1000));
+        });
     }
   } catch (_) { /* localStorage unavailable — sweep on every load as before */ }
 

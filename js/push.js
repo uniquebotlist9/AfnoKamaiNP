@@ -157,6 +157,16 @@ function docIdFor(uid) {
 }
 
 /**
+ * Firestore doc id of THIS browser's subscription, or '' when signed out.
+ * Lets the settings page turn push off on the current device only, instead
+ * of wiping every device the account is registered on.
+ */
+export function localSubscriptionDocId() {
+  const user = auth.currentUser;
+  return user ? docIdFor(user.uid) : '';
+}
+
+/**
  * Ensure this browser has a live subscription in both PushManager and
  * Firestore, and that the two agree.
  *
@@ -352,6 +362,12 @@ export async function disablePush(targetDocId = null) {
   const user = auth.currentUser;
   if (!user) return { ok: false, reason: 'signed_out' };
 
+  // Which rows this call touches. `null` = every device; otherwise only the
+  // named one. Decides whether THIS browser's PushManager is affected —
+  // removing someone else's row must not mute the device you are sitting at.
+  const localDocId = docIdFor(user.uid);
+  const affectsLocal = !targetDocId || targetDocId === localDocId;
+
   try {
     if (!targetDocId) {
       const snap = await getDocs(
@@ -371,13 +387,15 @@ export async function disablePush(targetDocId = null) {
       }
     }
 
-    try {
-      const reg = await navigator.serviceWorker.getRegistration();
-      const sub = await reg?.pushManager.getSubscription();
-      await sub?.unsubscribe();
-    } catch (_) { /* best effort */ }
+    if (affectsLocal) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        const sub = await reg?.pushManager.getSubscription();
+        await sub?.unsubscribe();
+      } catch (_) { /* best effort */ }
 
-    try { localStorage.removeItem(ENDPOINT_CACHE); } catch (_) { /* ok */ }
+      try { localStorage.removeItem(ENDPOINT_CACHE); } catch (_) { /* ok */ }
+    }
     return { ok: true };
   } catch (err) {
     console.error('[push] disable failed', err);

@@ -44,6 +44,43 @@ let filterText = '';
 
 const debounce = (fn, ms = 250) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+/**
+ * Fill the Earnings column from each user's wallet.
+ *
+ * The column used to read `u.stats.earnedPaisa`, which NOTHING ever writes —
+ * only the wallet's `earnedPaisa` is maintained — so it always rendered रु0
+ * while the drawer beside it showed the real figure.
+ *
+ * Wallet rows are keyed by uid (no `userId` field, and rules forbid adding
+ * one), so there is no bulk query; each wallet is read individually. Runs
+ * after the row is painted so a slow read never delays the list, and a
+ * failure leaves "—" rather than a confidently wrong रु0.
+ */
+async function fillEarnings(users, body, run) {
+  if (!users.length) return;
+  // Index the rows that are actually in the DOM rather than interpolating uids
+  // into a CSS attribute selector — an id containing a quote or backslash
+  // would otherwise throw (and querySelectorAll reports nothing).
+  const cells = new Map();
+  body.querySelectorAll('tr[data-uid]').forEach((tr) => {
+    const cell = tr.querySelector('.u-earn');
+    if (cell) cells.set(tr.dataset.uid, cell);
+  });
+  if (!cells.size) return;
+
+  const wanted = users.filter((u) => cells.has(u.id));
+  await Promise.all(wanted.map(async (u) => {
+    const cell = cells.get(u.id);
+    try {
+      const w = await getDoc(doc(db, 'wallets', u.id));
+      if (run && run.stale) return;           // a newer run replaced the table
+      cell.textContent = fmtNPR(w.exists() ? (w.data().earnedPaisa || 0) : 0);
+    } catch (_) {
+      // leave the placeholder; a missing wallet is not an error worth a toast
+    }
+  }));
+}
+
 // One page of the list. `run` comes from autoPager: when a newer run starts
 // (search, filter change, ban/unban) this one stops instead of appending stale rows.
 async function load(reset, run) {
@@ -64,21 +101,23 @@ async function load(reset, run) {
         (u.email || '').toLowerCase().includes(t) ||
         (u.phone || '').includes(t));
     }
-    if (reset) {
-      if (!users.length) {
-        tableEl.innerHTML = emptyState({ icon: 'users', title: 'No users found', message: filterText ? 'No users match your search on this page — try different terms or load more.' : 'No registered users yet.' });
-        // Update the counter here: the normal path below never runs for an
-        // empty result, and a stale "N shown" next to "No users found" is
-        // exactly the kind of contradiction that erodes trust in the page.
-        content.querySelector('#u-count').textContent = '0 shown';
-        return null;
-      }
+    // Advance the cursor BEFORE rendering. An empty page after client-side
+    // filtering must still hand autoPager a cursor: returning null here used
+    // to halt the pager, so a search match living on page 2+ was never
+    // fetched and "No users match your search" was a lie.
+    cursor = snap.docs[snap.docs.length - 1] || null;
+
+    if (reset || !tableEl.querySelector('#users-body')) {
+      // Rebuild when resetting, and also when a prior error render left no
+      // tbody — otherwise insertAdjacentHTML would throw, the catch would
+      // swallow it, and (with `reset` false) silently stop the pager.
       tableEl.innerHTML = `<div class="table-wrap"><table class="table">
         <thead><tr><th></th><th>User</th><th>Phone</th><th>Status</th><th>Joined</th><th>Earnings</th><th></th></tr></thead>
         <tbody id="users-body"></tbody></table></div>`;
     }
-    const body = tableEl.querySelector('#users-body');
-    body.insertAdjacentHTML('beforeend', users.map((u) => `
+    const tbody = tableEl.querySelector('#users-body');
+    if (users.length) {
+      tbody.insertAdjacentHTML('beforeend', users.map((u) => `
       <tr data-uid="${esc(u.id)}" style="cursor:pointer">
         <td style="width:44px"><span class="avatar sm">${esc(initials(u.fullName))}</span></td>
         <td><div class="cell-strong">${esc(u.fullName || '—')}</div><div class="small muted">${esc(u.email)}</div></td>
@@ -86,18 +125,26 @@ async function load(reset, run) {
         <td>${u.status === 'banned' ? badge('Banned', 'red', { dot: true }) : badge('Active', 'green', { dot: true })}
             ${computeRiskFlags(u).length ? badge('Review recommended', 'amber') : ''}</td>
         <td class="small num">${esc(fmtDateTime(u.createdAt))}</td>
-        <td class="cell-strong num">${esc(fmtNPR(u.stats?.earnedPaisa || 0))}</td>
+        <td class="cell-strong num u-earn">—</td>
         <td style="text-align:right"><button class="btn ghost btn-sm" data-open="${esc(u.id)}">Open</button></td>
       </tr>`).join(''));
-    // Bind only rows added by THIS page — re-binding the whole tbody would make
-    // every previously-bound row open two drawers after a "Load more".
-    body.querySelectorAll('tr:not([data-wired])').forEach((tr) => {
-      tr.dataset.wired = '1';
-      tr.addEventListener('click', () => openUser(tr.dataset.uid));
-    });
-    cursor = snap.docs[snap.docs.length - 1] || null;
+      fillEarnings(users, tbody, run);
+      // Bind only rows added by THIS page — re-binding the whole tbody would make
+      // every previously-bound row open two drawers after a "Load more".
+      tbody.querySelectorAll('tr:not([data-wired])').forEach((tr) => {
+        tr.dataset.wired = '1';
+        tr.addEventListener('click', () => openUser(tr.dataset.uid));
+      });
+    }
     const total = tableEl.querySelectorAll('#users-body tr').length;
-    content.querySelector('#u-count').textContent = `${total} shown`;
+    if (!total && !cursor) {
+      // Source exhausted AND nothing matched — the only true empty result.
+      // With a cursor left, the pager is still looking, so keep the table.
+      tableEl.innerHTML = emptyState({ icon: 'users', title: 'No users found', message: filterText ? 'No users match your search.' : 'No registered users yet.' });
+      content.querySelector('#u-count').textContent = '0 shown';
+    } else {
+      content.querySelector('#u-count').textContent = `${total} shown`;
+    }
     return cursor;
   } catch (_) {
     if (reset) {
@@ -152,9 +199,22 @@ async function openUser(uid) {
   drawer.innerHTML = `<div class="drawer-body"><div class="state-block loading"><span class="spin dark"></span></div></div>`;
   document.body.append(ov, drawer);
   requestAnimationFrame(() => { ov.classList.add('open'); drawer.classList.add('open'); });
-  const close = () => { ov.classList.remove('open'); drawer.classList.remove('open'); setTimeout(() => { ov.remove(); drawer.remove(); }, 250); };
+  // Remove the key listener on EVERY close path, not just on Escape.
+  // Previously it was only unbound when Escape fired, so closing with the
+  // overlay leaked one dead handler per drawer opened.
+  let escHandler = null;
+  const close = () => {
+    if (escHandler) {
+      document.removeEventListener('keydown', escHandler);
+      escHandler = null;
+    }
+    ov.classList.remove('open');
+    drawer.classList.remove('open');
+    setTimeout(() => { ov.remove(); drawer.remove(); }, 250);
+  };
   ov.addEventListener('click', close);
-  document.addEventListener('keydown', function esc2(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc2); } });
+  escHandler = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', escHandler);
 
   try {
     const uSnap = await getDoc(doc(db, 'users', uid));

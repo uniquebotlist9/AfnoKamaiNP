@@ -171,7 +171,7 @@ export async function sweepHolds(userId = null) {
 export async function reviewTask({ assignmentId, action, reason }) {
   const admin = await requireAdmin();
   const cleanReason = String(reason || '').slice(0, 500).trim();
-  if (['cancel', 'reject', 'clarify'].includes(action) && cleanReason.length < 5) {
+  if (['cancel', 'reject', 'clarify', 'cancelInProgress'].includes(action) && cleanReason.length < 5) {
     throw new Error('A clear reason is required.');
   }
 
@@ -248,6 +248,10 @@ export async function reviewTask({ assignmentId, action, reason }) {
   if (action === 'approve') {
     const reward = asg.rewardPaisa;
     if (!Number.isInteger(reward) || reward <= 0) throw new Error('Invalid reward on assignment.');
+    // Generated before the transaction (`doc(collection())` is purely local —
+    // no network) so its id survives the closure and can key the referral
+    // reward to THIS approval.
+    const taskLedgerRef = doc(collection(db, 'transactions'));
     await runTransaction(db, async (tx) => {
       const fresh = await tx.get(ref);
       if (!fresh.exists() || fresh.data().status !== 'submitted') throw new Error('This task was already reviewed.');
@@ -259,7 +263,7 @@ export async function reviewTask({ assignmentId, action, reason }) {
         earnedPaisa: increment(reward),
         updatedAt: serverTimestamp()
       });
-      const txRef = doc(collection(db, 'transactions'));
+      const txRef = taskLedgerRef;
       tx.set(txRef, {
         transactionId: txRef.id, userId: asg.userId,
         type: 'task_reward', amountPaisa: reward, status: 'hold',
@@ -294,7 +298,8 @@ export async function reviewTask({ assignmentId, action, reason }) {
         referredUserId: asg.userId,
         taskId: asg.taskId,
         assignmentId,
-        title: asg.title
+        title: asg.title,
+        ledgerId: taskLedgerRef.id
       });
     } catch (refErr) {
       console.warn('[reviewTask] referral reward processing failed (will reconcile):', refErr && refErr.code, refErr && refErr.message);
@@ -361,7 +366,17 @@ export async function reviewTask({ assignmentId, action, reason }) {
       tx.update(doc(db, 'users', asg.userId), { 'stats.assigned': increment(-1) });
       if (t) {
         const taken = Math.max((t.slotsTaken || 0) - 1, 0);
-        tx.update(taskRef, { slotsTaken: taken, status: 'open' });
+        // Only reopen a task this slot had filled. Writing any other status
+        // would clobber an intentional `paused`/`archived` state — and `open`
+        // is not a valid status at all (draft/published/paused/full/archived),
+        // so the task would drop off the Earn page, where rules require
+        // `status == 'published'`.
+        const reopen = t.status === 'full'
+          && (t.slotsTotal || 0) > 0
+          && taken < (t.slotsTotal || 0);
+        tx.update(taskRef, reopen
+          ? { slotsTaken: taken, status: 'published' }
+          : { slotsTaken: taken });
       }
       tx.set(historyRef, {
         ...fresh.data(), status: 'cancelled', rejectionReason: cleanReason,
@@ -410,7 +425,13 @@ export async function reviewWithdrawal({ withdrawalId, action, reason }) {
   if (action === 'completed') {
     if (['completed', 'rejected'].includes(w.status)) throw new Error('Withdrawal already finalized.');
     // Make sure matured holds are in the available balance first.
-    await sweepHolds(w.userId);
+    // Best-effort: a sweep failure (missing composite index, transient
+    // network error) must not abort the payout with an unrelated message.
+    // The transaction below re-checks `available` authoritatively and fails
+    // with a clear error if the holds genuinely have not matured.
+    await sweepHolds(w.userId).catch((e) => {
+      console.warn('[reviewWithdrawal] pre-completion hold sweep failed (continuing):', e && e.code, e && e.message);
+    });
 
     const walletRef = doc(db, 'wallets', w.userId);
     let afterBalance = 0;
@@ -528,7 +549,7 @@ async function getReferralConfig() {
  * Called from reviewTask's approve branch; safe to call repeatedly for
  * reconciliation.
  */
-export async function processReferralReward({ admin = null, referredUserId, taskId, assignmentId = '', title = '' }) {
+export async function processReferralReward({ admin = null, referredUserId, taskId, assignmentId = '', title = '', ledgerId = '' }) {
   if (!referredUserId || !taskId) return { ok: true, skipped: 'missing-ids' };
   const a = admin || await requireAdmin();
 
@@ -556,14 +577,23 @@ export async function processReferralReward({ admin = null, referredUserId, task
   const isRecurring = newCount > cfg.milestoneTasks;
   const amountPaisa = isMilestone ? cfg.milestoneRewardPaisa : isRecurring ? cfg.recurringRewardPaisa : 0;
   // Deterministic reward id — the ledger document uses the SAME id.
+  // The suffix must identify ONE approval, not one task: the active
+  // assignment doc (`${userId}_${taskId}`) is DELETED on every final
+  // decision, so a task that is rejected and later re-requested produces a
+  // second, legitimate approval. Keying on taskId alone made that second
+  // approval collide with the first and get skipped as a "duplicate",
+  // silently under-paying the referrer. `ledgerId` is the auto-id of the
+  // task_reward row written for THIS approval: unique per approval, yet
+  // stable across retries of the same one, so idempotency still holds.
+  const approvalKey = ledgerId || taskId;
   const rewardId = isMilestone
     ? `REFERRAL_MILESTONE_${referredBy}_${referredUserId}`
     : isRecurring
-      ? `REFERRAL_TASK_${referredBy}_${referredUserId}_${taskId}`
+      ? `REFERRAL_TASK_${referredBy}_${referredUserId}_${approvalKey}`
       : '';
   const rewardRef = rewardId ? doc(db, 'referralRewards', rewardId) : null;
   const walletRef = doc(db, 'wallets', referredBy);
-  const eventRef = doc(db, 'referrals', referralId, 'events', `task_${taskId}`);
+  const eventRef = doc(db, 'referrals', referralId, 'events', `task_${approvalKey}`);
   const referredName = String(referral.referredName || '').slice(0, 60) || 'Your referral';
 
   let outcome = { ok: true, newCount };
@@ -760,7 +790,10 @@ export async function reconcileReferral(referralId) {
       referredUserId: r.referredUserId,
       taskId,
       assignmentId: t.referenceId || '',
-      title: t.description || 'approved task'
+      title: t.description || 'approved task',
+      // This row's auto-id IS the approval's ledger id, so reconcile derives
+      // the same reward id reviewTask does instead of a divergent one.
+      ledgerId: approved.docs[i].id
     });
     if (res && res.ok && !res.duplicate && res.rewardId) processed++;
   }
@@ -1116,7 +1149,18 @@ export async function banUser({ userId, action, type, reason, until }) {
     const isPermanent = type !== 'temporary';
     let untilTs = null;
     if (!isPermanent) {
-      untilTs = until ? Timestamp.fromDate(new Date(until)) : Timestamp.fromMillis(Date.now() + 7 * 86400000);
+      // `<input type="date">` yields "YYYY-MM-DD", which `new Date()` parses
+      // as UTC midnight — 05:45 the same morning in Nepal. Reading "until the
+      // 20th" as 05:45 on the 20th is wrong, so a bare date is taken as the
+      // END of that day in the viewer's own timezone. Full timestamps and the
+      // 7-day default still parse unchanged.
+      if (until && /^\d{4}-\d{2}-\d{2}$/.test(String(until))) {
+        const [y, m, d] = String(until).split('-').map(Number);
+        const end = new Date(y, m - 1, d, 23, 59, 59, 999);
+        untilTs = Timestamp.fromDate(end);
+      } else {
+        untilTs = until ? Timestamp.fromDate(new Date(until)) : Timestamp.fromMillis(Date.now() + 7 * 86400000);
+      }
     }
     await updateDoc(doc(db, 'users', userId), {
       status: 'banned',

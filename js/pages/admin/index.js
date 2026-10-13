@@ -65,7 +65,12 @@ async function counts() {
   const [users, active, reviews, withdrawals, chats, penalties] = await Promise.all([
     count('users', 'status', ['active', 'banned']),
     count('users', 'status', ['active']),
-    count('taskAssignments', 'status', ['submitted', 'under_review']),
+    // Must match the sidebar badge in admin-shell.js (['requested','submitted'])
+    // and the Reviews page's two tabs. It previously read ['submitted',
+    // 'under_review'] — 'under_review' is a WITHDRAWAL status that is never
+    // written to taskAssignments, so the card under-counted by dropping every
+    // 'requested' row and showed a different number than the badge beside it.
+    count('taskAssignments', 'status', ['requested', 'submitted']),
     count('withdrawals', 'status', ['pending', 'under_review', 'processing']),
     (async () => {
       try {

@@ -12,7 +12,8 @@ import { toast, confirmDialog, btnBusy, emptyState } from '../ui.js';
 import { CATEGORIES, LOCKED_CATEGORIES } from '../notify.js';
 import {
   permissionState, pushSupported, enablePush, disablePush,
-  listDevices, getPrefs, savePrefs, syncSubscription, hasActiveSubscription
+  listDevices, getPrefs, savePrefs, syncSubscription, hasActiveSubscription,
+  localSubscriptionDocId
 } from '../push.js';
 
 let { content } = await mountShell('notifications');
@@ -135,7 +136,10 @@ async function renderPermission() {
     permBlock.querySelector('#disable-push').addEventListener('click', async (e) => {
       const btn = e.currentTarget;
       btnBusy(btn, true, 'Turning off…');
-      const res = await disablePush();
+      // Target THIS browser's subscription doc. Calling disablePush() with no
+      // argument deleted every registered device, so turning off notifications
+      // on one laptop silently muted the user's phone too.
+      const res = await disablePush(localSubscriptionDocId() || null);
       btnBusy(btn, false);
       if (res.ok) {
         toast('Push turned off on this device.');

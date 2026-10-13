@@ -15,7 +15,7 @@
 
 import { db } from '../firebase.js';
 import {
-  collection, query, where, orderBy, limit, getDocs, getCountFromServer,
+  collection, query, where, orderBy, limit, getDocs,
   doc, serverTimestamp, startAfter,
   updateDoc as fsUpdateDoc, deleteDoc as fsDeleteDoc, writeBatch as fsWriteBatch
 } from 'firebase/firestore';
@@ -205,28 +205,37 @@ function tabQuery() {
 }
 
 // ─── Counts ──────────────────────────────────────────────────────────
-// Exact aggregates rather than "fetch 150 and count". The old approach
-// silently showed a wrong number the moment a user had more than 150.
+// One fetch for every badge, not one per badge.
+//
+// `getCountFromServer` in this adapter has no server-side aggregate: it
+// downloads every matching row and counts them (see collect()). Ten badges
+// meant ten full scans of the user's notifications per page load — and the
+// reads did not even share a cache entry, because each has a different set
+// of constraints. A single unfiltered fetch is strictly cheaper (each of the
+// old queries returned a subset of it) and stays exact: there is no limit
+// here, so it pages through everything, exactly as `agg([])` did.
+//
+// Client-side counting is equivalent to the old `where` clauses: documents
+// predating the reindex have no `category`, and both forms exclude them
+// (`r.category === id` is false for undefined, as `==` is in Firestore).
 async function loadCounts() {
-  const agg = (filters) => getCountFromServer(
-    query(collection(db, 'notifications'), where('userId', '==', user.uid), ...filters)
-  );
-
   try {
-    const results = await Promise.all([
-      agg([]),
-      agg([where('read', '==', false)]),
-      ...TABS.filter((t) => !['all', 'unread'].includes(t.id)).map((t) =>
-        agg([t.in ? where('category', 'in', t.in) : where('category', '==', t.id)]))
-    ]);
+    const snap = await getDocs(query(
+      collection(db, 'notifications'),
+      where('userId', '==', user.uid)
+    ));
+    const rows = snap.docs.map((d) => d.data());
 
-    const total = results[0].data().count;
-    const unread = results[1].data().count;
+    const total = rows.length;
+    const unread = rows.filter((r) => r.read === false).length;
+    const inTab = (t) => rows.filter((r) => (
+      t.in ? t.in.includes(r.category) : r.category === t.id
+    )).length;
 
     TABS.forEach((t, i) => {
       const el = content.querySelector(`[data-count="${t.id}"]`);
       if (!el) return;
-      const n = i === 0 ? total : i === 1 ? unread : results[i].data().count;
+      const n = i === 0 ? total : i === 1 ? unread : inTab(t);
       el.hidden = !n;
       el.textContent = n > 99 ? '99+' : String(n);
     });

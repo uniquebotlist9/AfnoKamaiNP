@@ -40,13 +40,33 @@ const BRIDGE_RETRY_COOLDOWN_MS = 10000;
 // Keep-warm: ping the bridge every 10 s so the Function stays hot
 // (cold start adds ~2 s; warm execution is ~0.7 s).
 let keepWarmTimer = null;
+let keepWarmBound = false;
 const KEEP_WARM_MS = 10_000;
 
-function startKeepWarm() {
-  if (keepWarmTimer) return;
-  // Initial ping
+function keepWarmTick() {
+  // A hidden tab makes no requests, but the interval kept firing anyway:
+  // 360 billed Function executions per hour for a tab nobody is looking at.
+  // Skipping the tick costs nothing and the timer stays armed, so there is no
+  // re-arm path to get wrong.
+  if (typeof document !== 'undefined' && document.hidden) return;
   pingBridge();
-  keepWarmTimer = setInterval(pingBridge, KEEP_WARM_MS);
+}
+
+function onWake() {
+  // Ping the moment the tab comes back — that is exactly when a cold start
+  // would otherwise be paid for.
+  if (typeof document !== 'undefined' && document.hidden) return;
+  if (keepWarmTimer) pingBridge();
+}
+
+function startKeepWarm() {
+  if (!keepWarmBound && typeof document !== 'undefined') {
+    keepWarmBound = true;
+    document.addEventListener('visibilitychange', onWake);
+  }
+  if (keepWarmTimer) return;
+  keepWarmTick();
+  keepWarmTimer = setInterval(keepWarmTick, KEEP_WARM_MS);
 }
 
 async function pingBridge() {
@@ -57,7 +77,6 @@ async function pingBridge() {
       action: 'bridge',
       idToken
     });
-    console.log('[keep-warm] ping ok');
   } catch (e) {
     console.warn('[keep-warm] ping failed:', e && e.message);
   }

@@ -423,12 +423,27 @@ function startHeartbeat(uid) {
   // writes NOTHING, and returning to a stale tab writes exactly once. The
   // 60s timer below is a local clock check — it only reaches the network
   // when the tab is visible and the last beat is older than 4 minutes.
+  //
+  // `lastBeat` survives navigation (scoped per tab, and per uid so a logout
+  // cannot hand the next user a warm gate). Without it every page load reset
+  // the gate to 0, so the forced beat below and the beforeunload beat each
+  // wrote on every click — two writes per navigation for a value whose whole
+  // contract is "5-minute granularity". Now a browsing user writes once per
+  // four minutes, and `lastActiveAt` never goes more than 4 minutes stale.
+  const key = 'ak_last_beat:' + uid;
   let lastBeat = 0;
+  try { lastBeat = Number(sessionStorage.getItem(key)) || 0; } catch (_) { lastBeat = 0; }
+  const remember = (v) => { try { sessionStorage.setItem(key, String(v)); } catch (_) {} };
+
+  // The staleness gate now applies even when forced: `force` only means
+  // "ignore document.hidden" (the beforeunload case, where the tab may
+  // already be hidden), not "write anyway".
   const beat = (force) => {
     if (!force && document.hidden) return;
     const now = Date.now();
-    if (!force && now - lastBeat < 4 * 60 * 1000) return;
+    if (now - lastBeat < 4 * 60 * 1000) return;
     lastBeat = now;
+    remember(now);
     updateDoc(doc(db, 'users', uid), { lastActiveAt: serverTimestamp() }).catch(() => {});
   };
   beat(true);

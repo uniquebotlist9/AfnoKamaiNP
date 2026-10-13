@@ -562,8 +562,9 @@ const MAX_PAGES = 100;
 // issued close together share one round-trip: a poll racing an explicit
 // fetch, two listeners landing on the same query, a guard and the shell
 // asking for the same profile in the same tick. The window is deliberately
-// short — it absorbs bursts, it does not replace freshness — and any local
-// write to the table invalidates it outright (see commitGroup()).
+// short — it absorbs bursts, it does not replace freshness — and a local
+// write invalidates the rows it touched plus every query on their table
+// (see commitGroup() and invalidateQueries()).
 const READ_TTL_MS = 1200;
 const readCache = new Map();    // key -> { at, value }
 const readInflight = new Map(); // key -> Promise
@@ -597,11 +598,16 @@ function cachedRead(key, load) {
   return p;
 }
 
-function invalidateTable(table) {
-  const dPrefix = 'd:' + table + '/';
+// A query result can change because of any write to the table — row contents,
+// matches, ordering — so query entries are dropped table-wide. A cached read
+// of a single row cannot: only that row's own write makes it stale, which
+// commitGroup() drops directly. That distinction matters, because the read
+// cache is what serves listener polls — evicting untouched rows used to turn
+// every local write into a fresh download of everything else on the table.
+function invalidateQueries(table) {
   const qPrefix = 'q:' + table + ':';
   for (const k of readCache.keys()) {
-    if (k.startsWith(dPrefix) || k.startsWith(qPrefix)) readCache.delete(k);
+    if (k.startsWith(qPrefix)) readCache.delete(k);
   }
 }
 
@@ -867,9 +873,16 @@ async function commitGroup(resolved) {
   // The rows just changed: drop their cached reads so the next getDoc is
   // fresh, and wake any listener on those tables so this tab sees its own
   // write immediately instead of on the next poll tick.
-  const tables = new Set(resolved.map((o) => o.table));
+  //
+  // Doc entries go per row and query entries per table — see invalidateQueries
+  // for why the two are treated differently.
+  const tables = new Set();
+  for (const op of resolved) {
+    tables.add(op.table);
+    readCache.delete('d:' + op.table + '/' + op.rowId);
+  }
   for (const table of tables) {
-    invalidateTable(table);
+    invalidateQueries(table);
     wakeTable(table);
   }
 }

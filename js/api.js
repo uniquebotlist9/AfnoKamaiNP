@@ -275,6 +275,10 @@ export async function requestTask({ taskId }) {
   const mySnap = await getDoc(doc(db, 'users', user.uid)).catch(() => null);
   const myName = mySnap?.data()?.fullName || '';
 
+  // Captured by the transaction below (which reads the task row anyway) so
+  // the support bump after it doesn't re-read the same row just for a title.
+  let requestedTitle = '';
+
   try {
     await runTransaction(db, async (tx) => {
       const [taskSnap, existing] = await Promise.all([tx.get(taskRef), tx.get(asgRef)]);
@@ -283,6 +287,7 @@ export async function requestTask({ taskId }) {
       }
       if (existing.exists()) throw new Error('You already have an active request for this task.');
       const t = taskSnap.data();
+      requestedTitle = t.title || '';
       tx.set(asgRef, {
         taskId,
         title: t.title || '',
@@ -315,14 +320,15 @@ export async function requestTask({ taskId }) {
   }
 
   // Surface the request in the support conversation (cosmetic fields only).
-  const taskSnap = await getDoc(taskRef).catch(() => null);
-  const title = String(taskSnap?.data()?.title || 'a task').slice(0, 80);
+  // Title comes from the transaction above — it read the same row — so this
+  // costs no read of its own instead of a fresh getDoc on `tasks`.
+  const title = String(requestedTitle || 'a task').slice(0, 80);
   await bumpAdminUnread(`Task request: ${title}`, 'text').catch(() => {});
 
   return { ok: true };
 }
 
-export async function submitTask({ assignmentId, note, evidenceNote }) {
+export async function submitTask({ assignmentId, note, evidenceNote, title }) {
   const user = requireAuth();
   const cleanNote = String(note || '').slice(0, 1000).trim();
   const cleanEvidence = String(evidenceNote || '').slice(0, 1000).trim();
@@ -336,8 +342,16 @@ export async function submitTask({ assignmentId, note, evidenceNote }) {
   } catch (e) {
     throw ruleError(e, 'Could not submit this task. Refresh the page and try again.');
   }
-  const asg = await getDoc(doc(db, 'taskAssignments', assignmentId)).catch(() => null);
-  const submittedTitle = String(asg?.data()?.title || 'task').slice(0, 80);
+  // The caller opened this flow by reading the assignment, so it already has
+  // the title — pass it through. Reading here instead would re-read the very
+  // row the write above just evicted from the doc cache, i.e. a guaranteed
+  // cache miss purely to build a cosmetic support preview. Fall back to a read
+  // only if a future caller omits it.
+  let submittedTitle = String(title || '').slice(0, 80);
+  if (!submittedTitle) {
+    const asg = await getDoc(doc(db, 'taskAssignments', assignmentId)).catch(() => null);
+    submittedTitle = String(asg?.data()?.title || 'task').slice(0, 80);
+  }
   await bumpAdminUnread(`Submitted “${submittedTitle}” for review`, 'text').catch(() => {});
   return { ok: true };
 }

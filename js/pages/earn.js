@@ -315,7 +315,7 @@ async function submitFlow(assignmentId) {
     const btn = ev.currentTarget;
     btnBusy(btn, true, 'Submitting…');
     try {
-      await submitTask({ assignmentId, note, evidenceNote: evidence });
+      await submitTask({ assignmentId, note, evidenceNote: evidence, title: asg.title });
       m.close();
       // The cached list above still shows the old status — force a re-read
       // so "Submitted for review" appears without waiting for the next

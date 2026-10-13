@@ -37,7 +37,8 @@ content.innerHTML = `
         <div><h3>My tasks</h3><div class="sub">Your requested and assigned tasks</div></div>
         <button class="btn ghost btn-sm" id="refresh-lists">${icon('refresh')} Refresh</button>
       </div>
-      <div id="assignments">${skeletonRows(2)}</div>
+      <div id="assignments" class="as-list">${skeletonRows(2)}</div>
+      <div class="as-more" id="assignments-more" hidden></div>
     </div>
   </section>
 
@@ -116,11 +117,16 @@ function cacheGet(key) {
   } catch (_) { return null; }
 }
 
+// Newest first, capped server-side: "My tasks" shows the 5 most recent rows
+// and scrolls for the rest. Reading 50 rows just to paint 5 would bill for
+// history nobody asked to see.
+const ASSIGNMENTS_SHOWN = 5;
+
 const qMine = query(
   collection(db, 'taskAssignments'),
   where('userId', '==', user.uid),
   orderBy('requestedAt', 'desc'),
-  limit(20)
+  limit(ASSIGNMENTS_SHOWN)
 );
 
 let assignmentsPainted = false;
@@ -129,18 +135,44 @@ let loadSeq = 0; // generation: a superseded read never renders or caches
 
 function renderAssignments(items) {
   const el = content.querySelector('#assignments');
-  if (!items.length) {
+  // The sessionStorage snapshot can predate the cap — paint at most the
+  // newest ASSIGNMENTS_SHOWN rows no matter which path supplied them.
+  const shown = items.slice(0, ASSIGNMENTS_SHOWN);
+  if (!shown.length) {
     el.innerHTML = emptyState({
       icon: 'briefcase',
       title: 'No tasks requested yet',
       message: 'Pick a task below and tap "Request Task" to get started.'
     });
   } else {
-    el.innerHTML = items.map((a) => renderAssignment(a.id, a)).join('');
+    el.innerHTML = shown.map((a) => renderAssignment(a.id, a)).join('');
     wireAssignmentActions(el);
   }
   assignmentsPainted = true;
+  syncAssignmentsHint();
 }
+
+/**
+ * Reveal the "scroll for older tasks" line only when the box really
+ * overflows. Measuring after paint means a 1–5 item list never carries a
+ * scroll hint, and a phone-sized window that wraps rows longer than a
+ * laptop's still gets one.
+ */
+function syncAssignmentsHint() {
+  const list = content.querySelector('#assignments');
+  const hint = content.querySelector('#assignments-more');
+  if (!list || !hint) return;
+  const more = list.scrollHeight - list.clientHeight > 2;
+  hint.hidden = !more;
+  hint.innerHTML = more ? `${icon('arrowDown')} Scroll to see older tasks` : '';
+}
+
+// Row wrapping changes with viewport width, so re-measure when it moves.
+let asHintTick = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(asHintTick);
+  asHintTick = setTimeout(syncAssignmentsHint, 150);
+});
 
 /**
  * One bounded read of "my tasks".

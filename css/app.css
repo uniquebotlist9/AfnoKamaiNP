@@ -279,6 +279,26 @@
 .as-countdown { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--amber-700); font-weight: 600; }
 .as-countdown .ic { width: 14px; height: 14px; }
 
+/* "My tasks" is capped at the 5 most recent rows and scrolls inside the
+   card, so a long history never pushes the task marketplace off screen.
+   contain keeps a wheel/trackpad flick from scrolling the page behind it. */
+.as-list {
+  max-height: min(380px, 62vh); overflow-y: auto;
+  overscroll-behavior: contain; scrollbar-width: thin;
+}
+.as-list::-webkit-scrollbar { width: 6px; }
+.as-list::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 6px; }
+
+/* Scroll affordance. `[hidden]` has to be re-asserted: the display:flex rule
+   below would otherwise win and leave the hint painted on an empty list. */
+.as-more[hidden] { display: none; }
+.as-more {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 22px 11px; font-size: 12.5px; font-weight: 600; color: var(--ink-3);
+  border-top: 1px solid var(--line);
+}
+.as-more .ic { width: 14px; height: 14px; }
+
 /* ── Withdraw ────────────────────────────────────────── */
 .withdraw-hero {
   display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; margin-bottom: 20px;

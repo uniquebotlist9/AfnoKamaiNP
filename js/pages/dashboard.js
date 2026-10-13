@@ -58,6 +58,12 @@ const ktLabel = (d) => new Intl.DateTimeFormat('en-GB', {
 }).format(d);
 
 // ── Announcement banner (result of the parallel read) ──
+// Built here but NOT inserted yet: content.innerHTML is assigned further
+// down and would wipe anything already inside it. It is prepended into
+// .app-content after that assignment so it inherits the page's horizontal
+// padding and 1280px cap — as a sibling of <main> it spanned the full
+// width and sat out of line with every card below it.
+let pendingBanner = null;
 try {
   const annSnap = await annPromise;
   if (annSnap && !annSnap.empty) {
@@ -73,12 +79,12 @@ try {
           <p>${esc(a.message)}</p>
         </div>
         <button class="ab-x" aria-label="Dismiss announcement">${icon('x')}</button>`;
-      content.parentElement.insertBefore(banner, content);
       banner.querySelector('.ab-x').addEventListener('click', () => {
         dismissed.push(annSnap.docs[0].id);
         localStorage.setItem('ak_dismissed_ann', JSON.stringify(dismissed.slice(-20)));
         banner.remove();
       });
+      pendingBanner = banner;
     }
   }
 } catch (_) { /* announcements optional */ }
@@ -150,6 +156,10 @@ content.innerHTML = `
       </div>
     </div>
   </div>`;
+
+// Prepend (not append) so the banner stays the first thing under the topbar.
+// prepend(null) would stringify to the literal text "null", so guard it.
+if (pendingBanner) content.prepend(pendingBanner);
 
 // responsive charts row
 const chartsRow = content.querySelector('#charts-row');

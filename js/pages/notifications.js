@@ -118,6 +118,20 @@ let searchTerm = '';
 let cursor = null;
 let lastDay = '';
 
+// ── Count source ─────────────────────────────────────────────────────
+// The badges used to need their own `getDocs` with no limit, so every visit
+// downloaded the user's whole notification history TWICE: once through the
+// autoPaging list below and once here, in parallel, into a different cache
+// entry because the two queries have different shapes. The unfiltered list
+// load fetches exactly the same rows, so it keeps a copy and the badges are
+// computed from that — no fetch at all on the path people actually take.
+// The download survives only as a fallback for what the copy cannot answer:
+// a category/search refresh, or an unfiltered run superseded by a tab click
+// before it finished paging.
+let listRows = [];
+let listComplete = false;  // listRows covers every notification this user has
+let countsLoaded = false;  // the badge numbers currently on screen are current
+
 const listEl = content.querySelector('#notif-list');
 const unreadPill = content.querySelector('#unread-pill');
 const searchInput = content.querySelector('#notif-q');
@@ -147,8 +161,25 @@ content.querySelector('#mark-all').addEventListener('click', async (e) => {
       await batch.commit();
       toast(`Marked ${snap.size} as read.`);
     }
-    refresh();
-    loadCounts();
+    // Everything the batch touched is on screen and already in the list copy,
+    // so the badges and the unread dots can be corrected in place. Refetching
+    // cost up to 400 reads for the query, then a full re-download of the list
+    // and a second full download for the counts — on the order of 3N reads to
+    // flip some booleans. Two cases still refetch: a full 400 (there may be
+    // leftovers the query never reached), and any row the copy has no record
+    // of — a notification that landed after the list was loaded, which means
+    // the copy no longer describes the whole set.
+    const known = new Set(listRows.map((r) => r.id));
+    if (listComplete && snap.size < 400 && snap.docs.every((d) => known.has(d.id))) {
+      listRows.forEach((r) => { r.read = true; });
+      listEl.querySelectorAll('.notif-item.unread').forEach((el) => {
+        el.classList.remove('unread');
+        el.querySelector('.unread-dot')?.remove();
+      });
+      renderCounts(listRows);
+    } else {
+      refresh();
+    }
   } catch (_) { toast('Could not mark all as read.', { type: 'error' }); }
   btn.disabled = false;
 });
@@ -205,43 +236,51 @@ function tabQuery() {
 }
 
 // ─── Counts ──────────────────────────────────────────────────────────
-// One fetch for every badge, not one per badge.
+// Client-side counting, over rows the list has already downloaded.
 //
 // `getCountFromServer` in this adapter has no server-side aggregate: it
 // downloads every matching row and counts them (see collect()). Ten badges
-// meant ten full scans of the user's notifications per page load — and the
-// reads did not even share a cache entry, because each has a different set
-// of constraints. A single unfiltered fetch is strictly cheaper (each of the
-// old queries returned a subset of it) and stays exact: there is no limit
-// here, so it pages through everything, exactly as `agg([])` did.
+// once meant ten full scans of the user's notifications per page load; that
+// was collapsed into one unfiltered fetch — but that was still a second full
+// download of the same rows, into a different cache entry, because the two
+// queries have different shapes.
 //
-// Client-side counting is equivalent to the old `where` clauses: documents
-// predating the reindex have no `category`, and both forms exclude them
-// (`r.category === id` is false for undefined, as `==` is in Firestore).
+// It is now computed from `listRows`, which the unfiltered load keeps for
+// exactly this. Same arithmetic as before: `r.category === id` is false for
+// undefined, so documents predating the reindex are excluded here exactly as
+// the old `where` clauses excluded them.
+/** Paint the tab badges + unread pill from rows that are already in memory. */
+function renderCounts(rows) {
+  const total = rows.length;
+  const unread = rows.filter((r) => r.read === false).length;
+  const inTab = (t) => rows.filter((r) => (
+    t.in ? t.in.includes(r.category) : r.category === t.id
+  )).length;
+
+  TABS.forEach((t, i) => {
+    const el = content.querySelector(`[data-count="${t.id}"]`);
+    if (!el) return;
+    const n = i === 0 ? total : i === 1 ? unread : inTab(t);
+    el.hidden = !n;
+    el.textContent = n > 99 ? '99+' : String(n);
+  });
+
+  unreadPill.hidden = !unread;
+  unreadPill.textContent = unread > 99 ? '99+ unread' : `${unread} unread`;
+}
+
+/**
+ * Fallback, and the only path that still pays for a full download. Reached
+ * solely when the list copy cannot answer — see the note by `listRows`.
+ */
 async function loadCounts() {
   try {
     const snap = await getDocs(query(
       collection(db, 'notifications'),
       where('userId', '==', user.uid)
     ));
-    const rows = snap.docs.map((d) => d.data());
-
-    const total = rows.length;
-    const unread = rows.filter((r) => r.read === false).length;
-    const inTab = (t) => rows.filter((r) => (
-      t.in ? t.in.includes(r.category) : r.category === t.id
-    )).length;
-
-    TABS.forEach((t, i) => {
-      const el = content.querySelector(`[data-count="${t.id}"]`);
-      if (!el) return;
-      const n = i === 0 ? total : i === 1 ? unread : inTab(t);
-      el.hidden = !n;
-      el.textContent = n > 99 ? '99+' : String(n);
-    });
-
-    unreadPill.hidden = !unread;
-    unreadPill.textContent = unread > 99 ? '99+ unread' : `${unread} unread`;
+    renderCounts(snap.docs.map((d) => d.data()));
+    countsLoaded = true;
   } catch (e) {
     console.warn('notification counts failed', e);
   }
@@ -307,10 +346,14 @@ function renderItems(items) {
 // One page of the list. `run` comes from autoPager: when a newer run starts
 // (tab switch, search, mark-all) this one stops instead of appending stale rows.
 async function load(reset, run) {
+  // Only an unfiltered load can answer the tab counts: a category or search
+  // query returns a strict subset of the same rows.
+  const unfiltered = !searchTerm && activeTab === 'all';
   if (reset) {
     cursor = null;
     lastDay = '';
     listEl.innerHTML = skeletonRows(5, 58);
+    if (unfiltered) { listRows = []; listComplete = false; }
   }
   try {
     const snap = await getDocs(searchTerm ? searchQuery() : tabQuery());
@@ -326,6 +369,21 @@ async function load(reset, run) {
       listEl.querySelectorAll('.notif-main:not([data-wired]), [data-del]:not([data-wired])').forEach(wireItem);
     }
     cursor = searchTerm ? null : (snap.docs[snap.docs.length - 1] || null);
+
+    // Keep the rows for the badges. Only fields the counts need are stored.
+    if (unfiltered) {
+      for (const d of items) {
+        const n = d.data();
+        listRows.push({ id: d.id, read: n.read, category: n.category });
+      }
+      // A short page means the pager has nothing left to ask for — including
+      // the very first page of an empty list, so badges settle either way.
+      if (items.length < PAGE) {
+        listComplete = true;
+        renderCounts(listRows);
+        countsLoaded = true;
+      }
+    }
     return cursor;
   } catch (e) {
     console.warn('notifications load failed', e);
@@ -346,7 +404,11 @@ async function load(reset, run) {
 const loadAll = autoPager(load);
 
 async function refresh(reset = true) {
-  await loadAll(reset);
+  const finished = await loadAll(reset);
+  // `false` means a newer run took over; that run owns the badges from here.
+  // When the unfiltered load finished it already painted them from its own
+  // rows, so this stays a fallback rather than a second download.
+  if (finished && !countsLoaded) await loadCounts();
 }
 
 function wireItem(btn) {
@@ -367,7 +429,15 @@ function wireItem(btn) {
       try {
         await deleteDoc(doc(db, 'notifications', id));
         row.remove();
-        loadCounts();
+        // One row left the list — adjust the badges from the copy rather than
+        // re-downloading every notification to recount.
+        if (listComplete) {
+          const i = listRows.findIndex((r) => r.id === id);
+          if (i >= 0) listRows.splice(i, 1);
+          renderCounts(listRows);
+        } else {
+          loadCounts();
+        }
         toast('Notification deleted.');
       } catch (err) {
         console.warn('delete failed', err);
@@ -388,5 +458,4 @@ function wireItem(btn) {
 
 // ─── Boot ────────────────────────────────────────────────────────────
 
-refresh();
-loadCounts();
+refresh(); // paints the list and, from those same rows, the tab badges

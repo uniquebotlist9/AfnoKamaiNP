@@ -438,7 +438,7 @@ function setupNotifications(layout, uid) {
       });
     }
     firstSnapshot = false;
-  }, () => { /* badge is best-effort */ }, { maxPollMs: 10000 });
+  }, () => { /* badge is best-effort */ }, { maxPollMs: 30000 });
 
   const bell = layout.querySelector('#notif-bell');
   bell.addEventListener('click', () => {

@@ -732,7 +732,10 @@ function noteOverlay(group, ref, after) {
   if (group) group.overlay.set(ref.table + '/' + ref.documentId, after);
 }
 
-async function resolveWrite(op, group) {
+// Build the wire operation for one write against a row that has already been
+// fetched. Deliberately synchronous: `raw` is handed in rather than re-read,
+// so resolving a group never fetches the same row twice.
+function buildWriteOp(op, group, raw) {
   const { ref } = op;
 
   if (op.kind === 'delete') {
@@ -742,7 +745,6 @@ async function resolveWrite(op, group) {
 
   const payload = { ...op.data, ...(ref.inject || {}) };
   const dynamic = needsReadBeforeWrite(payload);
-  const raw = await readForWrite(ref, group);
 
   if (op.kind === 'update') {
     if (dynamic) {
@@ -787,6 +789,70 @@ async function resolveWrite(op, group) {
   }
   noteOverlay(group, ref, after);
   return { op: 'update', table: ref.table, rowId: ref.documentId, data: replaced };
+}
+
+/**
+ * Resolve one operation: fetch its row once, then build the wire op.
+ *
+ * The row's $updatedAt rides along as `baseUpdatedAt`. That is the read
+ * version executeWrite() used to fetch a second time in collectReadVersions()
+ * — one extra network round trip per row, on every write in the app. The
+ * payload keeps the identical `reads` field and value, so the Function's
+ * contract is untouched; only the duplicate GET goes away. It is also the
+ * more accurate of the two: `buildWriteOp` computed `data` from this very
+ * row, so a write resolved against version V now declares V instead of
+ * whatever a later re-read happened to see.
+ */
+async function resolveWrite(op, group) {
+  const raw = await readForWrite(op.ref, group);
+  const rev = raw ? raw.$updatedAt : null;
+  const resolved = buildWriteOp(op, group, raw);
+  resolved.baseUpdatedAt = typeof rev === 'string' ? rev : null;
+  return resolved;
+}
+
+/**
+ * Resolve every operation in a group.
+ *
+ * Operations on the same row must run in submission order — a later one has to
+ * see the overlay an earlier one left behind, which is what gives a batch its
+ * getAfter semantics. Operations on *different* rows never look at each
+ * other's overlay (`readForWrite` only ever looks up `op.ref`, and nothing
+ * else in resolution touches another row), so those chains run concurrently
+ * and a two-row write costs one round trip instead of two.
+ *
+ * Concurrency is capped: a 200-operation batch should not open 200 sockets.
+ */
+async function resolveAll(ops, group) {
+  const chains = [];
+  const byRow = new Map();
+  ops.forEach((op, i) => {
+    const key = op.ref.table + '/' + op.ref.documentId;
+    let chain = byRow.get(key);
+    if (!chain) { chain = []; byRow.set(key, chain); chains.push(chain); }
+    chain.push(i);
+  });
+
+  const resolved = new Array(ops.length);
+  let cursor = 0;
+  let stop = null;
+  const worker = async () => {
+    for (;;) {
+      if (stop) return;
+      const at = cursor++;
+      if (at >= chains.length) return;
+      try {
+        for (const i of chains[at]) resolved[i] = await resolveWrite(ops[i], group);
+      } catch (e) {
+        stop = e;
+        throw e;
+      }
+    }
+  };
+  const workers = [];
+  for (let i = 0, n = Math.min(8, chains.length); i < n; i++) workers.push(worker());
+  await Promise.all(workers);
+  return resolved;
 }
 
 /** Start a group of operations that will be validated and applied together. */
@@ -858,9 +924,7 @@ export function writeBatch() {
       // the whole batch if any operation fails, which is the atomicity
       // Firestore's WriteBatch had and a sequential loop could not.
       const group = beginGroup();
-      const resolved = [];
-      for (const op of ops) resolved.push(await resolveWrite(op, group));
-      await commitGroup(resolved);
+      await commitGroup(await resolveAll(ops, group));
     }
   };
   return batch;
@@ -930,9 +994,7 @@ export async function runTransaction(_db, fn, options) {
       // own writes, then ship them as one validated group so a failure on the
       // third operation cannot leave the first two applied.
       const group = beginGroup();
-      const resolved = [];
-      for (const op of ops) resolved.push(await resolveWrite(op, group));
-      await commitGroup(resolved);
+      await commitGroup(await resolveAll(ops, group));
       return result;
     } catch (e) {
       if (e.code !== 'resource-exhausted' && e.code !== 'unavailable' && e.code !== 'failed-precondition') throw e;

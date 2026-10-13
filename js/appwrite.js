@@ -315,8 +315,17 @@ async function readRowVersion(table, rowId) {
   }
 }
 
-/** One read dependency per distinct row the batch touches (null when absent). */
-async function collectReadVersions(ops) {
+/**
+ * One read dependency per distinct row the batch touches (null when absent).
+ *
+ * `resolveWrite()` already read each of these rows while computing the
+ * operation and stamped the version on it as `baseUpdatedAt`, so the value is
+ * normally in hand and no second GET is needed — the caller used to pay one
+ * extra network round trip per row on every write in the app. Pass `fresh` to
+ * re-read from the network: that is what a retry wants, because by then a row
+ * may have moved underneath us.
+ */
+async function collectReadVersions(ops, fresh) {
   const seen = new Set();
   const deps = [];
   for (const op of ops) {
@@ -324,7 +333,12 @@ async function collectReadVersions(ops) {
     const key = op.table + '/' + op.rowId;
     if (seen.has(key)) continue;
     seen.add(key);
-    deps.push({ table: op.table, rowId: op.rowId, updatedAt: await readRowVersion(op.table, op.rowId) });
+    const known = !fresh && Object.prototype.hasOwnProperty.call(op, 'baseUpdatedAt');
+    deps.push({
+      table: op.table,
+      rowId: op.rowId,
+      updatedAt: known ? op.baseUpdatedAt : await readRowVersion(op.table, op.rowId)
+    });
   }
   return deps;
 }
@@ -361,11 +375,14 @@ export async function executeWrite(ops) {
 
   let attempt = 0;
   let conflicts = 0;
+  let pass = 0;
   for (;;) {
-    // Fresh read versions on every attempt: the proxy validates the batch
-    // against them inside its transaction, and a conflict (409) means one of
-    // the rows moved underneath us — re-read and try again before giving up.
-    const reads = await collectReadVersions(list);
+    // The first pass reuses the versions resolveWrite() captured while it was
+    // already reading these rows — same value, one less round trip per row. A
+    // retry (a 401 that needed a fresh token, or a 409) re-reads from the
+    // network instead, because by then a row may have moved underneath us.
+    const reads = await collectReadVersions(list, pass > 0);
+    pass += 1;
     const payload = { action: 'write', ops: list, reads };
 
     // forceRefresh on the second pass: a rejected token is usually an

@@ -352,10 +352,21 @@ function setupNotifications(layout, uid) {
     if (!document.hidden) firstSnapshot = true;
   });
 
+  // PWA badge on device home screen (Android/Chrome, Edge, Opera, Samsung Internet).
+  // Falls back gracefully on unsupported browsers.
+  let appBadgeSupported = false;
+  try { appBadgeSupported = 'setAppBadge' in navigator; } catch (_) {}
+  function setAppBadge(count) {
+    if (!appBadgeSupported) return;
+    if (count > 0) navigator.setAppBadge(count).catch(() => { appBadgeSupported = false; });
+    else navigator.clearAppBadge().catch(() => { appBadgeSupported = false; });
+  }
+
   subscribeWhileVisible(qUnread, (snap) => {
     const n = snap.size;
     unreadCount = n;
     updateTabTitle();
+    setAppBadge(n);
     layout.querySelectorAll('[data-badge="notif"], [data-badge="notif-bell"]').forEach((b) => {
       b.hidden = n === 0;
       b.textContent = n > 99 ? '99+' : n;

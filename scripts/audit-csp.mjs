@@ -33,11 +33,20 @@ for (const f of htmlFiles) {
     const attrs = m[1];
     const body = m[2];
     if (/\bsrc\s*=/i.test(attrs)) continue;           // external script
-    if (/type\s*=\s*["']importmap["']/i.test(attrs)) continue; // importmap not subject to script-src hashes
+    const isImportmap = /type\s*=\s*["']importmap["']/i.test(attrs);
     if (/type\s*=\s*["'](application\/(ld\+json|json))["']/i.test(attrs)) continue;
-    const hash = createHash('sha256').update(body, 'utf8').digest('base64');
+    // The HTML parser normalizes CRLF/lone CR to LF before the script text
+    // exists, so the browser hashes the LF form. Hash the raw bytes instead
+    // and every CRLF file reports a phantom "NOT IN CSP" / "STALE" mismatch.
+    // Keep this in lockstep with scripts/gen-csp.cjs's hashOf().
+    const normalized = body.replace(/\r\n?/g, '\n');
+    if (!normalized.trim()) continue;
+    const hash = createHash('sha256').update(normalized, 'utf8').digest('base64');
     if (!used.has(hash)) used.set(hash, []);
     used.get(hash).push(rel);
+    // Importmaps are recorded so their CSP hash is not reported as stale, but
+    // gen-csp.cjs is the source of truth for whether they are listed.
+    if (isImportmap) continue;
     if (!allowedHashes.has(hash)) {
       problems.push(`NOT IN CSP: ${rel} — inline script sha256-${hash} (first 24: ${body.trim().slice(0, 60).replace(/\s+/g, ' ')}…)`);
     }

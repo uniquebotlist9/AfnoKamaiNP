@@ -20,6 +20,9 @@ const htmlFiles = [];
 const problems = [];
 const importmapVariants = new Map();
 
+/** `./x.js?v=3` -> `./x.js`; the query is a cache-buster, not part of the file. */
+const stripQuery = (spec) => spec.split('?')[0].split('#')[0];
+
 function attrRefs(html) {
   const refs = [];
   // script src / link href / img src / iframe src / source src / a href to files
@@ -93,7 +96,10 @@ function checkSpecifier(htmlFile, rel, spec, imports) {
     if (!matched) problems.push(`${rel}: bare import "${spec}" not in importmap`);
     return;
   }
-  const p = spec.startsWith('/') ? spec.slice(1) : relative(ROOT, resolve(dirname(htmlFile), spec));
+  // Cache-busting query/hash is part of the URL, not the file on disk.
+  const file = stripQuery(spec);
+  if (!file) return;
+  const p = file.startsWith('/') ? file.slice(1) : relative(ROOT, resolve(dirname(htmlFile), file));
   if (!existsSync(p)) problems.push(`${rel}: import "${spec}" MISSING (${p})`);
 }
 
@@ -124,7 +130,8 @@ for (const f of jsFiles) {
       if (!matched) problems.push(`${rel}: bare import "${spec}" not in any importmap`);
       continue;
     }
-    const base = spec.startsWith('/') ? spec.slice(1) : relative(ROOT, resolve(dirname(f), spec));
+    const clean = stripQuery(spec);
+    const base = clean.startsWith('/') ? clean.slice(1) : relative(ROOT, resolve(dirname(f), clean));
     const candidates = [base, `${base}.js`, join(base, 'index.js')];
     if (!candidates.some((c) => existsSync(c))) problems.push(`${rel}: import "${spec}" MISSING`);
   }
@@ -137,7 +144,8 @@ for (const f of jsFiles) {
       if (!keys.some((k) => (k.endsWith('/') ? spec.startsWith(k) : spec === k))) problems.push(`${rel}: dynamic bare import "${spec}" not in importmap`);
       continue;
     }
-    const base = spec.startsWith('/') ? spec.slice(1) : relative(ROOT, resolve(dirname(f), spec));
+    const dynBase = stripQuery(spec);
+    const base = dynBase.startsWith('/') ? dynBase.slice(1) : relative(ROOT, resolve(dirname(f), dynBase));
     if (![base, `${base}.js`, join(base, 'index.js')].some((c) => existsSync(c))) problems.push(`${rel}: dynamic import "${spec}" MISSING`);
   }
 }

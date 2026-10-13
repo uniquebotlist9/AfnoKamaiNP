@@ -37,6 +37,35 @@ let bridgeInFlight = null;
 let lastBridgeAttempt = 0;
 
 const BRIDGE_RETRY_COOLDOWN_MS = 10000;
+// Keep-warm: ping the bridge every 10 s so the Function stays hot
+// (cold start adds ~2 s; warm execution is ~0.7 s).
+let keepWarmTimer = null;
+const KEEP_WARM_MS = 10_000;
+
+function startKeepWarm() {
+  if (keepWarmTimer) return;
+  // Initial ping
+  pingBridge();
+  keepWarmTimer = setInterval(pingBridge, KEEP_WARM_MS);
+}
+
+async function pingBridge() {
+  if (!sessionSecret || !bridgeUser) return;
+  try {
+    const idToken = await bridgeUser.getIdToken(false);
+    await raw('POST', `/functions/${APPWRITE_AUTH_FUNCTION_ID}/executions`, {
+      action: 'bridge',
+      idToken
+    });
+    console.log('[keep-warm] ping ok');
+  } catch (e) {
+    console.warn('[keep-warm] ping failed:', e && e.message);
+  }
+}
+
+export function stopKeepWarm() {
+  if (keepWarmTimer) { clearInterval(keepWarmTimer); keepWarmTimer = null; }
+}
 
 // ── Session persistence ───────────────────────────────────────────────
 // The secret used to live only in this module's memory, so every multi-page
@@ -250,6 +279,7 @@ export async function ensureAppwriteSession(user, force) {
       sessionSecret = body.secret;
       persistedUid = user.uid;
       persistSession();
+      startKeepWarm();
       return true;
     } catch (e) {
       console.warn('[appwrite] session bridge failed:', e && e.code, e && e.message);

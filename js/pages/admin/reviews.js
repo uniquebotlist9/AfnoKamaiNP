@@ -123,6 +123,10 @@ async function reviewModal(assignmentId) {
       actions.push('<button class="btn ghost" data-act="clarify">Request clarification</button>');
       actions.push(`<button class="btn primary" data-act="approve">${icon('check')} Approve & hold ${esc(fmtNPR(a.rewardPaisa))}</button>`);
     }
+    // Allow cancelling an in-progress (assigned) task the user abandoned
+    if (a.status === 'assigned') {
+      actions.push('<button class="btn danger" data-act="cancelInProgress">Cancel in-progress</button>');
+    }
     const m = modal({
       title: a.title,
       width: 640,
@@ -148,14 +152,14 @@ async function reviewModal(assignmentId) {
       let reason = '';
       if (needReason) {
         const rm = modal({
-          title: action === 'reject' ? 'Reject submission' : 'Request clarification',
+          title: action === 'reject' ? 'Reject submission' : action === 'cancelInProgress' ? 'Cancel in-progress task' : 'Request clarification',
           width: 460,
           body: `
-            <p class="confirm-msg">${action === 'reject' ? 'The user will see this reason on their task.' : 'The user will be asked to resubmit after addressing this.'}</p>
-            <textarea class="textarea" id="reason" placeholder="Explain what was wrong or unclear…"></textarea>`,
+            <p class="confirm-msg">${action === 'reject' ? 'The user will see this reason on their task.' : action === 'cancelInProgress' ? 'The slot will be released and the user notified.' : 'The user will be asked to resubmit after addressing this.'}</p>
+            <textarea class="textarea" id="reason" placeholder="Explain why you are cancelling this in-progress task…"></textarea>`,
           actions: `
             <button class="btn ghost" data-act="cancel">Cancel</button>
-            <button class="btn ${action === 'reject' ? 'danger' : 'primary'}" data-act="go">${action === 'reject' ? 'Reject task' : 'Send'}</button>`
+            <button class="btn ${action === 'reject' ? 'danger' : 'danger'}" data-act="go">${action === 'reject' ? 'Reject task' : action === 'cancelInProgress' ? 'Cancel task' : 'Send'}</button>`
         });
         rm.root.querySelector('[data-act="cancel"]').addEventListener('click', () => rm.close());
         rm.root.querySelector('[data-act="go"]').addEventListener('click', async (ev) => {
@@ -174,8 +178,10 @@ async function reviewModal(assignmentId) {
           m.close();
           toast(act === 'approve'
             ? `Approved. ${fmtNPR(a.rewardPaisa)} moved to hold — releases after the hold period.`
-            : act === 'reject' ? 'Task rejected and user notified.' : 'Clarification requested — user notified.',
-            { type: 'success', title: act === 'approve' ? 'Task approved' : 'Review saved' });
+            : act === 'reject' ? 'Task rejected and user notified.'
+            : act === 'cancelInProgress' ? 'Task cancelled — slot released and user notified.'
+            : 'Clarification requested — user notified.',
+            { type: 'success', title: act === 'approve' ? 'Task approved' : act === 'cancelInProgress' ? 'Task cancelled' : 'Review saved' });
           loadAll(true);
         } catch (err) {
           toast(err.message, { type: 'error' });
@@ -184,7 +190,7 @@ async function reviewModal(assignmentId) {
     };
     m.root.querySelectorAll('[data-act]').forEach((btn) => {
       const act = btn.dataset.act;
-      if (['approve', 'reject', 'clarify'].includes(act)) btn.addEventListener('click', () => handler(act));
+      if (['approve', 'reject', 'clarify', 'cancelInProgress'].includes(act)) btn.addEventListener('click', () => handler(act));
     });
   } catch (_) {
     toast('Could not open the review.', { type: 'error' });

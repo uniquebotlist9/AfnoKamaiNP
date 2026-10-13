@@ -567,28 +567,28 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
     // they are actually typing — idle threads back off.
   }, undefined, { maxPollMs: 8000 });
 
-  function setTyping(on) {
-    const field = role === 'user' ? 'userTyping' : 'adminTyping';
-    const at = role === 'user' ? 'userTypingAt' : 'adminTypingAt';
-    updateDoc(doc(db, 'conversations', cid), { [field]: on, [at]: serverTimestamp() }).catch(() => {});
-  }
+  // Typing indicator writes to the conversation row conflict with the send batch
+// (Appwrite Functions don't provide read-after-write consistency).
+// Disabled for now — the send batch already writes userTyping: false.
+// If typing indicator is needed later, move it to a separate ephemeral document.
+  // function setTyping(on) { ... }
 
   // ── composer ──
   input.addEventListener('input', () => {
     sendBtn.disabled = !input.value.trim();
-    const now = Date.now();
-    if (now - lastTypingSent > 2500) { lastTypingSent = now; setTyping(true); }
     clearTimeout(typingClearTimer);
-    typingClearTimer = setTimeout(() => setTyping(false), 4000);
+    typingClearTimer = setTimeout(() => { /* no-op */ }, 4000);
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 130) + 'px';
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendText(); }
   });
-  sendBtn.addEventListener('click', sendText);
+  // Prevent double-submit: the button is type="submit" inside a form; only handle click.
+  sendBtn.addEventListener('click', (e) => { e.preventDefault(); sendText(); });
 
   let sendTimes = [];
+  let isSending = false;
   function tooFast() {
     const now = Date.now();
     sendTimes = sendTimes.filter((t) => now - t < 60000);
@@ -606,14 +606,20 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   }
 
   async function sendText() {
-    const text = input.value.trim().slice(0, 4000); // rules cap text at 4000 chars
+    if (isSending) return;
+    const text = input.value.trim().slice(0, 4000);
     if (!text) return;
     if (!spendQuota()) return;
+    isSending = true;
     input.value = '';
     input.style.height = 'auto';
     sendBtn.disabled = true;
-    setTyping(false);
-    await deliver({ type: 'text', text });
+    clearTimeout(typingClearTimer);
+    try {
+      await deliver({ type: 'text', text });
+    } finally {
+      isSending = false;
+    }
   }
 
   // ── attachments ──
@@ -642,6 +648,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
         return;
       }
       if (!spendQuota()) return; // attachments share the same send budget as text
+      clearTimeout(typingClearTimer);
       deliver({ type: kind, file: f });
     };
   }

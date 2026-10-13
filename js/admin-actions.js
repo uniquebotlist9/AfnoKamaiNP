@@ -237,8 +237,8 @@ export async function reviewTask({ assignmentId, action, reason }) {
     return result;
   }
 
-  // Final decisions (cancel / reject / approve) — move to history.
-  const isFinal = ['cancel', 'reject', 'approve'].includes(action);
+  // Final decisions (cancel / reject / approve / cancelInProgress) — move to history.
+  const isFinal = ['cancel', 'reject', 'approve', 'cancelInProgress'].includes(action);
   if (!isFinal) throw new Error('Unknown action.');
 
   const config = await getConfig();
@@ -328,25 +328,56 @@ export async function reviewTask({ assignmentId, action, reason }) {
   }
 
   // cancel (decline a request that was never assigned)
-  await runTransaction(db, async (tx) => {
-    const fresh = await tx.get(ref);
-    // Only an unassigned request may be declined here: an `assigned` task has
-    // already consumed a slot and needs a different (reject) path.
-    if (!fresh.exists() || fresh.data().status !== 'requested') throw new Error('This request was already handled.');
-    tx.set(historyRef, {
-      ...fresh.data(), status: 'cancelled', rejectionReason: cleanReason,
-      reviewedAt: serverTimestamp(), reviewedBy: admin.uid, reviewedByName: admin.name, isHistory: true
+  if (action === 'cancel') {
+    await runTransaction(db, async (tx) => {
+      const fresh = await tx.get(ref);
+      // Only an unassigned request may be declined here: an `assigned` task has
+      // already consumed a slot and needs a different (cancelInProgress) path.
+      if (!fresh.exists() || fresh.data().status !== 'requested') throw new Error('This request was already handled.');
+      tx.set(historyRef, {
+        ...fresh.data(), status: 'cancelled', rejectionReason: cleanReason,
+        reviewedAt: serverTimestamp(), reviewedBy: admin.uid, reviewedByName: admin.name, isHistory: true
+      });
+      tx.delete(ref);
     });
-    tx.delete(ref);
-  });
-  await systemMsg(asg.userId, `Your request for “${asg.title}” was declined.\nReason: ${cleanReason}`);
-  await notify(asg.userId, {
-    type: 'task_request_update', tone: 'gray', icon: 'x', link: 'earn',
-    title: 'Task request declined',
-    body: `“${asg.title}”: ${cleanReason}`
-  });
-  await audit(admin, 'task_request_cancelled', 'taskAssignment', assignmentId, { userId: asg.userId, reason: cleanReason });
-  return result;
+    await systemMsg(asg.userId, `Your request for “${asg.title}” was declined.\nReason: ${cleanReason}`);
+    await notify(asg.userId, {
+      type: 'task_request_update', tone: 'gray', icon: 'x', link: 'earn',
+      title: 'Task request declined',
+      body: `“${asg.title}”: ${cleanReason}`
+    });
+    await audit(admin, 'task_request_cancelled', 'taskAssignment', assignmentId, { userId: asg.userId, reason: cleanReason });
+    return result;
+  }
+
+  // cancelInProgress — release an assigned task the user abandoned
+  if (action === 'cancelInProgress') {
+    await runTransaction(db, async (tx) => {
+      const fresh = await tx.get(ref);
+      if (!fresh.exists() || fresh.data().status !== 'assigned') throw new Error('This task is not currently assigned.');
+      const taskRef = doc(db, 'tasks', asg.taskId);
+      const taskSnap = await tx.get(taskRef);
+      const t = taskSnap.exists() ? taskSnap.data() : null;
+      tx.update(doc(db, 'users', asg.userId), { 'stats.assigned': increment(-1) });
+      if (t) {
+        const taken = Math.max((t.slotsTaken || 0) - 1, 0);
+        tx.update(taskRef, { slotsTaken: taken, status: 'open' });
+      }
+      tx.set(historyRef, {
+        ...fresh.data(), status: 'cancelled', rejectionReason: cleanReason,
+        reviewedAt: serverTimestamp(), reviewedBy: admin.uid, reviewedByName: admin.name, isHistory: true
+      });
+      tx.delete(ref);
+    });
+    await systemMsg(asg.userId, `The task “${asg.title}” was cancelled by an administrator.\nReason: ${cleanReason}\nThe slot has been released.`);
+    await notify(asg.userId, {
+      type: 'task_request_update', tone: 'gray', icon: 'x', link: 'earn',
+      title: 'Task cancelled',
+      body: `“${asg.title}” was cancelled: ${cleanReason}`
+    });
+    await audit(admin, 'task_cancelled_in_progress', 'taskAssignment', assignmentId, { userId: asg.userId, reason: cleanReason });
+    return result;
+  }
 }
 
 // ═══════════════════════ Withdrawal review ═══════════════════════════

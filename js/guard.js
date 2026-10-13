@@ -1,6 +1,7 @@
 // ─── Route guards: authentication + registration chain ───────────────
 // Flow: Login → Signup → Email Verification → Personal Info → PIN → Dashboard
 import { auth, db, isConfigured } from './firebase.js';
+import { stopKeepWarm } from './appwrite.js';
 import {
   onAuthStateChanged, signOut
 } from 'firebase/auth';
@@ -365,6 +366,7 @@ const ACCOUNT_SCOPED_KEYS = [
 
 export async function doLogout() {
   try { sessionStorage.clear(); } catch (_) {}
+  stopKeepWarm();
   try {
     for (const key of ACCOUNT_SCOPED_KEYS) localStorage.removeItem(key);
     // Profile mirrors are uid-suffixed — sweep them by prefix so a shared

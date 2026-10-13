@@ -804,9 +804,13 @@ export async function reconcileReferral(referralId) {
 }
 
 /** Reconcile the most recent referrals (admin panel bulk action). */
-export async function reconcileAllReferrals({ limit = 100 } = {}) {
+// The option is still named `limit` for callers, but it is rebound on the way
+// in: destructuring it as `limit` shadowed the imported Firestore `limit`
+// inside this body, so `limit(limit)` tried to CALL the number 100 and threw
+// "limit is not a function" — "Reconcile all" had never worked.
+export async function reconcileAllReferrals({ limit: maxRows = 100 } = {}) {
   const admin = await requireAdmin();
-  const snap = await getDocs(query(collection(db, 'referrals'), orderBy('createdAt', 'desc'), limit(limit)));
+  const snap = await getDocs(query(collection(db, 'referrals'), orderBy('createdAt', 'desc'), limit(maxRows)));
   let reconciled = 0, caughtUp = 0, failed = 0;
   for (const d of snap.docs) {
     try {

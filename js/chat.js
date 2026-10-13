@@ -657,6 +657,11 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
   async function deliver({ type, text, file }) {
     const clientRef = `${selfUid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const body = String(text || '').slice(0, 4000); // rules cap text at 4000 chars
+    // When this send started. Used only as a backstop deadline by the retire
+    // check below — never as evidence about what a snapshot does or does not
+    // contain, because a snapshot already in flight when the commit lands
+    // can arrive afterwards and still predate the write.
+    const sentAt = Date.now();
     const pendingMsg = {
       clientRef, senderId: selfUid, senderRole: role, senderName: selfName,
       type, text: body, createdAt: new Date(), pending: true, file
@@ -715,13 +720,23 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
       await batch.commit();
       committed = true; // ── from here on the message EXISTS; never offer Retry ──
       // Admin → user: raise the website notification (see helper for why it
-      // must be written from this session).
-      if (role === 'admin') await notifyUserOfAdminMessage(cid, { type, text: body });
+      // must be written from this session). Deliberately NOT awaited: the
+      // helper is documented never to throw and the message is already
+      // committed, so waiting on it held the composer hostage to a second
+      // write the sender cannot act on — every extra round trip an admin paid
+      // while trying to keep typing. The write still runs, and its own
+      // try/catch already logs any failure.
+      if (role === 'admin') notifyUserOfAdminMessage(cid, { type, text: body });
       // snapshot reconciliation removes the pending bubble
       const reconcile = setInterval(() => {
         const stillThere = pending.some((p) => p.clientRef === clientRef);
         const inSnap = latestMsgs.some((m) => m.clientRef === clientRef);
         if (inSnap || !stillThere) { clearInterval(reconcile); pendingReconcilers.delete(reconcile); return; }
+        // Not confirmed yet: hold the bubble. A committed message will show up
+        // in the next snapshot, and dropping it on a fixed deadline raced that
+        // poll — the bubble vanished and then came back. The 15s deadline is
+        // only the backstop for a listener that never confirms at all.
+        if (Date.now() - sentAt < 15000) return;
         pending = pending.filter((p) => p.clientRef !== clientRef);
         renderAll();
         clearInterval(reconcile);
@@ -738,6 +753,7 @@ function buildThread(rootEl, { role, cid, selfUid, selfName, conv = {}, withBack
           if (inSnap || !stillThere) {
             clearInterval(settle); pendingReconcilers.delete(settle); return;
           }
+          if (Date.now() - sentAt < 15000) return;
           pending = pending.filter((p) => p.clientRef !== clientRef);
           renderAll();
           clearInterval(settle); pendingReconcilers.delete(settle);

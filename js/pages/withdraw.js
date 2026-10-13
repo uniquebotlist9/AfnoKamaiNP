@@ -20,8 +20,6 @@ document.getElementById('page-skeleton')?.remove();
 
 let wallet = null;
 let config = { holdDays: 3, minWithdrawalPaisa: 50000 };
-const MIN_APPROVED_TASKS = 50; // withdrawal eligibility required by the Terms of Service
-const approvedTasks = Number(profile?.stats?.approved) || 0;
 
 content.innerHTML = `
   <div class="page-head">
@@ -55,7 +53,7 @@ content.innerHTML = `
 
   <div class="withdraw-note">
     ${icon('info')}
-    <span id="wd-req-note">You need at least <strong>रु500</strong> withdrawable <strong>and ${MIN_APPROVED_TASKS} approved tasks</strong> to withdraw — one request at a time. Funds still on hold become available automatically once the hold period ends.</span>
+    <span id="wd-req-note">You need at least <strong>रु500</strong> withdrawable to withdraw — one request at a time. Funds still on hold become available automatically once the hold period ends.</span>
   </div>
 
   <div class="card" id="withdraw-form-card" hidden>
@@ -104,9 +102,9 @@ watchPlatformConfig((c) => {
   config = c;
   const min = esc(fmtNPR(config.minWithdrawalPaisa));
   content.querySelector('#amount-hint').textContent =
-    `Minimum withdrawal: ${fmtNPR(config.minWithdrawalPaisa)} and ${MIN_APPROVED_TASKS} approved tasks (you have ${approvedTasks}). One withdrawal can be processed at a time.`;
+    `Minimum withdrawal: ${fmtNPR(config.minWithdrawalPaisa)}. One withdrawal can be processed at a time.`;
   content.querySelector('#wd-req-note').innerHTML =
-    `You need at least <strong>${min}</strong> withdrawable <strong>and ${MIN_APPROVED_TASKS} approved tasks</strong> to withdraw — one request at a time. Funds still on hold become available automatically once the hold period ends.`;
+    `You need at least <strong>${min}</strong> withdrawable to withdraw — one request at a time. Funds still on hold become available automatically once the hold period ends.`;
 });
 let pendingLock = false;
 async function refreshLock() {
@@ -122,11 +120,9 @@ async function refreshSummary() {
   content.querySelector('#wd-available').textContent = fmtNPR(summary.withdrawablePaisa);
   content.querySelector('#wd-available-note').textContent = pendingLock
     ? 'You already have a withdrawal being processed.'
-    : (approvedTasks < MIN_APPROVED_TASKS
-        ? `${approvedTasks}/${MIN_APPROVED_TASKS} approved tasks — complete more tasks to unlock withdrawals.`
-        : (summary.maturedPaisa > 0
-            ? `Includes ${fmtNPR(summary.maturedPaisa)} that has finished its hold period.`
-            : 'Ready for eSewa withdrawal.'));
+    : (summary.maturedPaisa > 0
+        ? `Includes ${fmtNPR(summary.maturedPaisa)} that has finished its hold period.`
+        : 'Ready for eSewa withdrawal.');
   content.querySelector('#wd-hold').textContent = fmtNPR(summary.holdUnmaturedPaisa);
   content.querySelector('#wd-hold-note').textContent =
     summary.holdUnmaturedPaisa > 0 ? `Releases automatically after the ${config.holdDays}-day hold` : 'Nothing on hold right now';
@@ -141,13 +137,11 @@ async function refreshSummary() {
   updateFormAvailability();
 }
 function updateFormAvailability() {
-  const enoughTasks = approvedTasks >= MIN_APPROVED_TASKS;
-  const canWithdraw = wallet && (wallet.withdrawablePaisa || 0) >= config.minWithdrawalPaisa && enoughTasks && !pendingLock;
+  const canWithdraw = wallet && (wallet.withdrawablePaisa || 0) >= config.minWithdrawalPaisa && !pendingLock;
   content.querySelector('#open-form').disabled = !canWithdraw;
   content.querySelector('#open-form').title = canWithdraw ? '' :
     (pendingLock ? 'You already have a withdrawal being processed.'
-      : (!enoughTasks ? `You need ${MIN_APPROVED_TASKS} approved tasks to withdraw — you have ${approvedTasks}.`
-        : `You need at least ${fmtNPR(config.minWithdrawalPaisa)} to withdraw.`));
+      : `You need at least ${fmtNPR(config.minWithdrawalPaisa)} to withdraw.`);
 }
 watchWallet(user.uid, () => { refreshSummary(); refreshLock(); });
 refreshLock();
@@ -183,7 +177,6 @@ content.querySelector('#withdraw-form').addEventListener('submit', (e) => {
   if (name.length < 3) { errEl.textContent = 'Please enter the account name registered on eSewa.'; errEl.hidden = false; return; }
   if (!isNepaliPhone(number)) { errEl.textContent = 'Please enter a valid eSewa mobile number, e.g. 98XXXXXXXX.'; errEl.hidden = false; return; }
   if (!npr || npr <= 0) { errEl.textContent = 'Please enter a valid withdrawal amount.'; errEl.hidden = false; return; }
-  if (approvedTasks < MIN_APPROVED_TASKS) { errEl.textContent = `You need at least ${MIN_APPROVED_TASKS} approved tasks to withdraw — you currently have ${approvedTasks}.`; errEl.hidden = false; return; }
   const amountPaisa = toPaisa(npr);
   if (amountPaisa < config.minWithdrawalPaisa) { errEl.textContent = `The minimum withdrawal is ${fmtNPR(config.minWithdrawalPaisa)}.`; errEl.hidden = false; return; }
   if (wallet && amountPaisa > (wallet.withdrawablePaisa || 0)) { errEl.textContent = 'That amount exceeds your withdrawable balance. Funds still on hold cannot be withdrawn.'; errEl.hidden = false; return; }

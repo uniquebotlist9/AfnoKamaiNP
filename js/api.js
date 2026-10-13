@@ -371,10 +371,6 @@ async function bumpAdminUnread(preview, type) {
 
 // ── Withdrawals ──────────────────────────────────────────────────────
 
-// Withdrawal eligibility required by the Terms of Service. Enforced here as
-// a backstop so the rule holds even if the withdraw page's check is bypassed.
-const MIN_APPROVED_TASKS = 50;
-
 export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, pin }) {
   const user = requireAuth();
   const amount = Number(amountPaisa);
@@ -392,10 +388,6 @@ export async function requestWithdrawal({ amountPaisa, esewaName, esewaNumber, p
   // re-checks the token's own email_verified claim before it will act.
   if (!(me.emailVerified || user.emailVerified)) throw new Error('Please verify your email address first.');
 
-  const approvedCount = Number(me.stats?.approved) || 0;
-  if (approvedCount < MIN_APPROVED_TASKS) {
-    throw new Error(`You need at least ${MIN_APPROVED_TASKS} approved tasks to withdraw — you currently have ${approvedCount}.`);
-  }
   if (!me.pinSetAt) throw new Error('No security PIN is set on your account.');
 
   // The bridge derives the withdrawal id from sha256(uid:requestId), so a

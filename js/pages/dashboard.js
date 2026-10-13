@@ -57,39 +57,8 @@ const ktLabel = (d) => new Intl.DateTimeFormat('en-GB', {
   timeZone: 'Asia/Kathmandu', day: 'numeric', month: 'short'
 }).format(d);
 
-// ── Announcement banner (result of the parallel read) ──
-// Built here but NOT inserted yet: content.innerHTML is assigned further
-// down and would wipe anything already inside it. It is prepended into
-// .app-content after that assignment so it inherits the page's horizontal
-// padding and 1280px cap — as a sibling of <main> it spanned the full
-// width and sat out of line with every card below it.
-let pendingBanner = null;
-try {
-  const annSnap = await annPromise;
-  if (annSnap && !annSnap.empty) {
-    const a = annSnap.docs[0].data();
-    const dismissed = JSON.parse(localStorage.getItem('ak_dismissed_ann') || '[]');
-    if (!dismissed.includes(annSnap.docs[0].id)) {
-      const banner = document.createElement('div');
-      banner.className = 'announce-banner';
-      banner.innerHTML = `
-        ${icon('megaphone')}
-        <div class="ab-body">
-          <h4>${esc(a.title)}</h4>
-          <p>${esc(a.message)}</p>
-        </div>
-        <button class="ab-x" aria-label="Dismiss announcement">${icon('x')}</button>`;
-      banner.querySelector('.ab-x').addEventListener('click', () => {
-        dismissed.push(annSnap.docs[0].id);
-        localStorage.setItem('ak_dismissed_ann', JSON.stringify(dismissed.slice(-20)));
-        banner.remove();
-      });
-      pendingBanner = banner;
-    }
-  }
-} catch (_) { /* announcements optional */ }
-
 // ── Hero + stat cards skeleton replaced ──
+// (The announcement banner is built after this assignment — see below.)
 document.getElementById('page-skeleton')?.remove();
 content.innerHTML = `
   <section class="hero-greeting">
@@ -157,9 +126,36 @@ content.innerHTML = `
     </div>
   </div>`;
 
-// Prepend (not append) so the banner stays the first thing under the topbar.
-// prepend(null) would stringify to the literal text "null", so guard it.
-if (pendingBanner) content.prepend(pendingBanner);
+// ── Announcement banner ──
+// Fire-and-forget. The query above started before mountShell, so it may well
+// be settled by now — but it is never awaited: a dismissible banner does not
+// get to decide when the hero becomes visible. It is prepended the moment it
+// lands. Prepend (not append) so it stays the first thing under the topbar,
+// and it goes in after content.innerHTML above so it inherits the page's
+// horizontal padding and 1280px cap rather than spanning full width as a
+// sibling of <main>.
+annPromise.then((annSnap) => {
+  if (!annSnap || annSnap.empty) return;
+  const first = annSnap.docs[0];
+  const dismissed = JSON.parse(localStorage.getItem('ak_dismissed_ann') || '[]');
+  if (dismissed.includes(first.id)) return;
+  const a = first.data();
+  const banner = document.createElement('div');
+  banner.className = 'announce-banner';
+  banner.innerHTML = `
+    ${icon('megaphone')}
+    <div class="ab-body">
+      <h4>${esc(a.title)}</h4>
+      <p>${esc(a.message)}</p>
+    </div>
+    <button class="ab-x" aria-label="Dismiss announcement">${icon('x')}</button>`;
+  banner.querySelector('.ab-x').addEventListener('click', () => {
+    dismissed.push(first.id);
+    localStorage.setItem('ak_dismissed_ann', JSON.stringify(dismissed.slice(-20)));
+    banner.remove();
+  });
+  content.prepend(banner);
+}).catch(() => { /* announcements optional */ });
 
 // responsive charts row
 const chartsRow = content.querySelector('#charts-row');

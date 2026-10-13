@@ -77,10 +77,20 @@ export async function mountShell(pageId) {
   // profile mirror carries, so the shell goes on screen immediately and the
   // real gate runs right after: an ended session or a pending chain step
   // (verify-email / setup) then redirects from a painted shell instead of a
-  // splash. First run — no mirror — keeps the original blocking path.
-  let access = null;
+  // splash.
+  //
+  // First run — no mirror — used to keep the original blocking path, which
+  // held the ENTIRE layout behind auth → bridge → profile read: a cold bridge
+  // is ~0.7 s warm and ~2 s cold, with the profile read a fourth round trip
+  // behind it, all of it in front of a blank screen. It paints now too, with
+  // an empty identity filled in the moment the gate resolves (`initials('')`
+  // renders '?' rather than throwing, so only an anonymous avatar shows
+  // early). The gate still runs before the page module is handed `content`,
+  // so chain checks and the restriction screen still decide before content —
+  // only the shell's PAINT stops depending on them.
   let profile = readActiveProfile();
-  if (!profile) { access = await gate(); profile = access.profile; }
+  const noMirror = !profile;
+  if (noMirror) profile = { fullName: '', email: '' };
 
   const layout = document.createElement('div');
   layout.className = 'app-layout';
@@ -149,11 +159,23 @@ export async function mountShell(pageId) {
 
   // Shell is on screen — finish the real gate here, where the slow part
   // (Firebase Auth's accounts:lookup) no longer hides behind the splash.
-  if (!access) {
-    access = await gate();
-    profile = access.profile;
-  }
+  // Unconditional now: the mirrorless path used to run it before paint, but
+  // only because the chrome needed fullName/email — the placeholder identity
+  // below stands in for that instead.
+  const access = await gate();
+  profile = access.profile;
   const { user } = access;
+
+  // Swap in the real identity that the mirrorless paint left blank. The four
+  // sites are the two avatars, the sidebar name and the sidebar email.
+  if (noMirror) {
+    const av = initials(profile.fullName);
+    const side = layout.querySelector('.side-user');
+    side.querySelector('.avatar').textContent = av;
+    side.querySelector('.nm').textContent = profile.fullName;
+    side.querySelector('.em').textContent = profile.email;
+    layout.querySelector('.topbar-actions .avatar').textContent = av;
+  }
 
   const content = layout.querySelector('#page-content');
 
@@ -226,7 +248,15 @@ export async function mountShell(pageId) {
 
   // ── Heartbeat, maintenance watch, offline, SW ──
   startHeartbeat(user.uid);
-  await watchMaintenance(profile);
+  // Deliberately NOT awaited. This read's only possible outcome is
+  // `location.replace('maintenance')`, it is throttled to once a minute per
+  // browser, and admins skip it entirely — so awaiting it put a network round
+  // trip on the critical path of every non-admin page's content render to buy
+  // an emergency redirect a few hundred milliseconds earlier. Starting it
+  // here still overlaps the read with the page module's own data fetches, so
+  // the redirect fires the moment it completes; the user simply never waits
+  // for it. Nothing below depends on the check having run.
+  watchMaintenance(profile).catch(() => {});
   initOfflineBanner();
   registerSW();
   initInstallPopup();

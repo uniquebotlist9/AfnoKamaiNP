@@ -62,9 +62,22 @@ async function counts() {
       return snap.data().count;
     } catch (_) { return 0; }
   };
+  // `users` is scanned ONCE for both cards. getCountFromServer has no
+  // server-side aggregate in this adapter — it downloads every matching row
+  // — and ['active','banned'] is a strict superset of ['active'], so the
+  // second call was re-downloading the whole first result just to count a
+  // subset of it. Counting the subset client-side from the same rows is
+  // exact: rows without a `status` are excluded by `in` in both forms.
+  const usersPair = (async () => {
+    try {
+      const snap = await getDocs(query(collection(db, 'users'), where('status', 'in', ['active', 'banned'])));
+      const rows = snap.docs.map((d) => d.data());
+      return [rows.length, rows.filter((r) => r.status === 'active').length];
+    } catch (_) { return [0, 0]; }
+  })();
   const [users, active, reviews, withdrawals, chats, penalties] = await Promise.all([
-    count('users', 'status', ['active', 'banned']),
-    count('users', 'status', ['active']),
+    usersPair.then((p) => p[0]),
+    usersPair.then((p) => p[1]),
     // Must match the sidebar badge in admin-shell.js (['requested','submitted'])
     // and the Reviews page's two tabs. It previously read ['submitted',
     // 'under_review'] — 'under_review' is a WITHDRAWAL status that is never

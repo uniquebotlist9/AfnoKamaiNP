@@ -145,9 +145,24 @@ function rowIdOf(logical) {
   return ROWID_RE.test(id) ? id : 'k' + compactHash(id);
 }
 
+/**
+ * The shape a handle must have: length, character set, and not reserved.
+ *
+ * Split out of validHandle() because referralHandles.create needs exactly
+ * the same test and cannot run the whole of it: the row being created is the
+ * proof of ownership, so it has nothing to look up. The create branch used
+ * to check ownership and nothing else — but the row id IS the public vanity
+ * URL, so anyone able to craft a bridge request could squat 'admin' or
+ * 'official' and have /ref/<it> resolve to their own referral code.
+ */
+function handleShape(h) {
+  if (!isStr(h) || h.length < 3 || h.length > 30) return false;
+  if (!HANDLE_RE.test(h) || RESERVED_HANDLES.has(h)) return false;
+  return true;
+}
+
 async function validHandle(h, ctx) {
-  if (!isStr(h) || h.length < 3 || h.length > 30 || !HANDLE_RE.test(h)) return false;
-  if (RESERVED_HANDLES.has(h)) return false;
+  if (!handleShape(h)) return false;
   const row = await ctx.read('referralHandles', h);
   // getAfter(referralHandles/{h}).userId == uid — the mapping must exist and
   // belong to the caller, or anyone could claim a handle nobody has taken.
@@ -395,6 +410,12 @@ POLICY.referralHandles = {
   async create(d, rowId, ctx) {
     const e = keysOnly(d, ['handle', 'userId', 'code', 'createdAt']); if (e) return e;
     if (d.handle !== rowId) return 'document id must be the handle itself';
+    // Shape as well as ownership. This row is the vanity URL /ref/<handle>
+    // resolves against, so an unvalidated row id let any caller who could
+    // reach the bridge own /ref/admin and collect sign-ups meant for the
+    // site. Mirrors the check the client applies, so nothing a legitimate
+    // form could ever produce starts failing here.
+    if (!handleShape(d.handle)) return 'that referral handle is not allowed';
     if (d.userId !== ctx.uid) return 'you may only claim your own handle';
     if (!validCode(d.code)) return 'malformed referral code';
     const code = await ctx.read('referralCodes', d.code);

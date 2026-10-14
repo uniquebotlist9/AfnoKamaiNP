@@ -3,7 +3,7 @@ import { db } from '../../firebase.js';
 import { collection, query, where, limit, getDocs } from 'firebase/firestore';
 import { subscribeWhileVisible } from '../../listen.js';
 import { mountAdminShell } from '../../admin-shell.js?v=5';
-import { esc, fmtNPR } from '../../utils.js';
+import { esc, fmtNPR, fmtRelative } from '../../utils.js';
 import { icon } from '../../icons.js';
 import { toast, btnBusy, modal } from '../../ui.js';
 import { mountChat } from '../../chat.js';
@@ -57,9 +57,97 @@ function promptDialog({ title, message, placeholder = '' }) {
 }
 
 // ── Pending task-request banner ──────────────────────────────────────
-// The thread re-renders as messages stream in, so the banner is (re)inserted
-// on a short interval and removed once nothing is pending.
-let bannerFor = null;
+// One banner PER pending request — not one banner for whichever request the
+// query happened to hand back first.
+//
+// The old code fetched up to five and then took docs[0] with no orderBy, so
+// with two requests waiting an admin could not tell which one "Assign task"
+// would act on; it was whichever row the backend returned first. Worse, the
+// thread re-renders as messages stream in and rebuilt that single banner
+// around a different assignment id, so the target could change under the
+// cursor between reading it and clicking.
+//
+// Each banner now carries its own assignment id in data-asg and the handler
+// reads it off the element it was clicked on, at click time. You assign
+// exactly the row you pressed, whatever else arrives in the meantime.
+const shownBanners = new Map(); // assignmentId -> banner element
+let bannerFingerprint = null;   // ordered ids currently painted
+// Ids we just acted on. The listener can fire before the write is visible in
+// a fresh query, and without this the banner you dismissed repaints for a
+// beat and invites a click that can only answer "already handled". An id
+// stays here until the server stops returning it, so the entry clears itself.
+const handled = new Set();
+
+const tsMs = (v) => {
+  if (!v) return 0;
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') { const t = Date.parse(v); return Number.isFinite(t) ? t : 0; }
+  return typeof v.toMillis === 'function' ? v.toMillis() : 0;
+};
+
+function removeBanner(id) {
+  const el = shownBanners.get(id);
+  if (el) el.remove();
+  shownBanners.delete(id);
+  // Force the next pass to reconcile from the server, since we just changed
+  // the painted set without a query to confirm it.
+  bannerFingerprint = null;
+}
+
+function buildRequestBanner(p) {
+  const banner = document.createElement('div');
+  banner.className = 'chat-req-banner';
+  banner.dataset.asg = p.id;
+  banner.innerHTML = `
+    <span class="ic">${icon('briefcase')}</span>
+    <div class="crb-body">
+      <strong>Task request: ${esc(p.a.title)}</strong>
+      Reward ${esc(fmtNPR(p.a.rewardPaisa))} · requested ${esc(fmtRelative(p.a.requestedAt))} · waiting to be assigned
+    </div>
+    <button class="btn primary btn-sm" data-act="assign">${icon('check')} Assign task</button>
+    <button class="btn ghost btn-sm" data-act="decline">Decline</button>`;
+
+  banner.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn || !banner.contains(btn) || btn.disabled) return;
+    // Read from the element, not a closure: whatever row this button lives
+    // in is the request it controls.
+    const assignmentId = banner.dataset.asg;
+    const action = btn.dataset.act;
+
+    if (action === 'assign') {
+      btnBusy(btn, true, 'Assigning…');
+      try {
+        await reviewTask({ assignmentId, action: 'assign' });
+        handled.add(assignmentId);
+        removeBanner(assignmentId);
+        toast('Task assigned — instructions were sent to the chat.', { type: 'success' });
+      } catch (err) {
+        toast((err && err.message) || 'Could not assign the task.', { type: 'error' });
+        btnBusy(btn, false); // keep the button usable so the admin can retry
+      }
+      return;
+    }
+
+    const reason = await promptDialog({
+      title: 'Decline this request',
+      message: 'The reason is shown to the user.',
+      placeholder: 'e.g. This task is no longer available.'
+    });
+    if (!reason) return;
+    btnBusy(btn, true, 'Declining…');
+    try {
+      await reviewTask({ assignmentId, action: 'cancel', reason });
+      handled.add(assignmentId);
+      removeBanner(assignmentId);
+      toast('Request declined.', { type: 'success' });
+    } catch (err) {
+      toast((err && err.message) || 'Could not decline the request.', { type: 'error' });
+      btnBusy(btn, false); // keep the button usable so the admin can retry
+    }
+  });
+  return banner;
+}
 
 async function maybeShowRequestBanner(uid) {
   if (!uid || !document.body.contains(content)) return;
@@ -70,68 +158,37 @@ async function maybeShowRequestBanner(uid) {
       where('status', '==', 'requested'),
       limit(5)
     ));
-    const pending = snap.empty ? null : snap.docs[0];
-    const existing = content.querySelector('.chat-req-banner');
-    if (!pending) {
-      if (existing) existing.remove();
-      bannerFor = null;
-      return;
+    // Deliberately NOT orderBy('requestedAt'): it would need a composite
+    // index on (userId, status, requestedAt) that may not exist, and this
+    // whole call sits inside a catch that swallows — a missing index would
+    // not warn, it would silently delete the banner. Five rows sorted
+    // locally is free, and newest-first is the order an admin expects.
+    const rows = snap.docs
+      .map((d) => ({ id: d.id, a: d.data() }))
+      .sort((x, y) => tsMs(y.a.requestedAt) - tsMs(x.a.requestedAt));
+    // Drop anything already handled here, and forget ids the server no longer
+    // returns — that is how the entry knows the write has landed.
+    const serverIds = new Set(rows.map((r) => r.id));
+    for (const id of [...handled]) if (!serverIds.has(id)) handled.delete(id);
+    const pending = rows.filter((r) => !handled.has(r.id));
+
+    const fingerprint = pending.map((p) => p.id).join(',');
+    // Nothing changed since the last pass: leave the DOM alone. Touching it
+    // is what used to swap ids out from under the cursor.
+    if (fingerprint === bannerFingerprint) return;
+
+    for (const id of [...shownBanners.keys()]) removeBanner(id);
+    bannerFingerprint = fingerprint;
+    if (!pending.length) return;
+    if (!content.querySelector('#admin-thread')) { bannerFingerprint = null; return; }
+
+    let anchor = null;
+    for (const p of pending) {
+      const el = buildRequestBanner(p);
+      shownBanners.set(p.id, el);
+      if (anchor) anchor.after(el); else content.insertBefore(el, content.firstChild);
+      anchor = el;
     }
-    if (!content.querySelector('#admin-thread')) return;
-    if (existing && bannerFor === pending.id) return;
-    if (existing) existing.remove();
-    bannerFor = pending.id;
-
-    const assignmentId = pending.id;
-    const a = pending.data();
-    const banner = document.createElement('div');
-    banner.className = 'chat-req-banner';
-    banner.dataset.asg = assignmentId;
-    banner.innerHTML = `
-      <span class="ic">${icon('briefcase')}</span>
-      <div class="crb-body">
-        <strong>Task request: ${esc(a.title)}</strong>
-        Reward ${esc(fmtNPR(a.rewardPaisa))} · the user is waiting to be assigned.
-      </div>
-      <button class="btn primary btn-sm" id="assign-req">${icon('check')} Assign task</button>
-      <button class="btn ghost btn-sm" id="decline-req">Decline</button>`;
-    content.insertBefore(banner, content.firstChild);
-
-    banner.querySelector('#assign-req').addEventListener('click', async (e) => {
-      const btn = e.currentTarget;
-      if (btn.disabled) return;
-      btnBusy(btn, true, 'Assigning…');
-      try {
-        await reviewTask({ assignmentId, action: 'assign' });
-        banner.remove();
-        bannerFor = null;
-        toast('Task assigned — instructions were sent to the chat.', { type: 'success' });
-      } catch (err) {
-        toast((err && err.message) || 'Could not assign the task.', { type: 'error' });
-        btnBusy(btn, false); // keep the button usable so the admin can retry
-      }
-    });
-
-    banner.querySelector('#decline-req').addEventListener('click', async (e) => {
-      const btn = e.currentTarget;
-      if (btn.disabled) return;
-      const reason = await promptDialog({
-        title: 'Decline this request',
-        message: 'The reason is shown to the user.',
-        placeholder: 'e.g. This task is no longer available.'
-      });
-      if (!reason) return;
-      btnBusy(btn, true, 'Declining…');
-      try {
-        await reviewTask({ assignmentId, action: 'cancel', reason });
-        banner.remove();
-        bannerFor = null;
-        toast('Request declined.', { type: 'success' });
-      } catch (err) {
-        toast((err && err.message) || 'Could not decline the request.', { type: 'error' });
-        btnBusy(btn, false); // keep the button usable so the admin can retry
-      }
-    });
   } catch (_) { /* non-fatal: banner is advisory */ }
 }
 

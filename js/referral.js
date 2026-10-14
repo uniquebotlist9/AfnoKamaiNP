@@ -203,10 +203,37 @@ export async function fetchReferralConfig() {
 }
 
 // ── Referral identity: claim code + optional vanity handle ───────────
-// One-time claim, transactional. Rules enforce: the code doc maps to this
-// uid, the handle is unique/unreserved, and the user doc carries no code
-// yet — so ownership can never be transferred or re-assigned by a client.
+// One sentence for every "somebody else already has it" path. A losing claim
+// must always be told the handle is taken and to pick another — never told it
+// saved, and never left with a vague retry message for a thing that retrying
+// can never fix.
+const HANDLE_TAKEN_MSG = 'That referral handle is already taken. Please choose a different one.';
 
+/**
+ * True when a write was refused because the row already exists.
+ *
+ * The client always reads the row before writing it, so the ordinary case is
+ * caught locally with our own 'taken' sentinel. But two accounts can read
+ * "absent" in the same instant and only collide at commit, where the bridge
+ * reports `already-exists` with Appwrite's wording — a message that matched
+ * none of the sentinel checks below, which is how a losing claim used to fall
+ * through silently.
+ */
+function isTakenError(e) {
+  if (!e) return false;
+  if (e.message === 'taken') return true;
+  if (e.code === 'already-exists') return true;
+  return /already exists/i.test(String(e.message || ''));
+}
+
+/**
+ * Claim a referral code for the signed-in user, plus a vanity handle when one
+ * is requested. One-time and transactional.
+ *
+ * Rules enforce: the code doc maps to this uid, the handle is unique and
+ * unreserved, and the user doc carries no code yet — so ownership can never
+ * be transferred or re-assigned by a client.
+ */
 export async function claimReferralIdentity({ handle = '' } = {}) {
   const user = auth.currentUser;
   if (!user) throw new Error('You must be logged in.');
@@ -222,8 +249,14 @@ export async function claimReferralIdentity({ handle = '' } = {}) {
     // Already claimed — adopt the stored code (the handle claim below still
     // applies when one was requested and none exists yet).
     if (cleanHandle && !existing.referralHandle) {
-      await tryClaimHandle(user.uid, cleanHandle, existing.referralCode);
-      return { code: existing.referralCode, handle: cleanHandle };
+      // tryClaimHandle THROWS when the handle is taken or the write is refused
+      // for any reason, so reaching here means we actually hold it — unless
+      // another tab of this account set one first, in which case it reports
+      // that handle rather than the one we asked for and did not get. Handing
+      // back `cleanHandle` unconditionally is what let a losing claim report
+      // success for a handle it never received.
+      const held = await tryClaimHandle(user.uid, cleanHandle, existing.referralCode);
+      return { code: existing.referralCode, handle: held };
     }
     return { code: existing.referralCode, handle: existing.referralHandle || '' };
   }
@@ -260,7 +293,7 @@ export async function claimReferralIdentity({ handle = '' } = {}) {
       if (cleanHandle) {
         const hRef = doc(db, 'referralHandles', cleanHandle);
         const hSnap = await tx.get(hRef);
-        if (hSnap.exists()) throw new Error('That referral handle was just taken by someone else. Please try another.');
+        if (hSnap.exists()) throw new Error(HANDLE_TAKEN_MSG);
         tx.set(hRef, { handle: cleanHandle, userId: user.uid, code, createdAt: serverTimestamp() });
       }
       tx.set(codeRef, { code, userId: user.uid, createdAt: serverTimestamp() });
@@ -284,6 +317,12 @@ export async function claimReferralIdentity({ handle = '' } = {}) {
       // Extremely unlikely (32^8 space) — regenerate once and retry.
       return claimReferralIdentity({ handle });
     }
+    // A handle two accounts both read as absent only collides at commit, so
+    // the client's own 'taken' sentinel never fires and the bridge reports
+    // `already-exists` instead. Without this it fell through to the generic
+    // message below, which blames the auto-generated code — a string the user
+    // never chose and cannot re-pick — instead of the handle they did.
+    if (cleanHandle && isTakenError(e)) throw new Error(HANDLE_TAKEN_MSG);
     if (errCode === 'resource-exhausted') {
       throw new Error('Your referral code could not be created: the service is temporarily out of write capacity. Please try again a bit later.');
     }
@@ -299,7 +338,19 @@ export async function claimReferralIdentity({ handle = '' } = {}) {
   return { code, handle: cleanHandle };
 }
 
+/**
+ * Claim `handle` for `uid` and return the handle this account then holds —
+ * the one we just wrote, or, when another tab of the same account set one
+ * first, the one it set instead.
+ *
+ * Every refusal throws. The previous version re-raised only its own 'taken'
+ * and 'has-handle' sentinels and let anything else fall off the end of the
+ * catch, so a lost race at commit time — which arrives as `already-exists`,
+ * not 'taken' — returned normally and the caller had no way to know. That is
+ * exactly how user B ended up being handed `handle` for a link owned by A.
+ */
 async function tryClaimHandle(uid, handle, code) {
+  let setByOtherTab = '';
   try {
     await runTransaction(db, async (tx) => {
       const hRef = doc(db, 'referralHandles', handle);
@@ -307,13 +358,21 @@ async function tryClaimHandle(uid, handle, code) {
       if (hSnap.exists()) throw new Error('taken');
       const userRef = doc(db, 'users', uid);
       const uSnap = await tx.get(userRef);
-      if ((uSnap.data() || {}).referralHandle) throw new Error('has-handle');
+      const already = (uSnap.data() || {}).referralHandle;
+      if (already) { setByOtherTab = already; throw new Error('has-handle'); }
       tx.set(hRef, { handle, userId: uid, code, createdAt: serverTimestamp() });
       tx.update(userRef, { referralHandle: handle });
     });
+    return handle;
   } catch (e) {
-    if (e && e.message === 'taken') throw new Error('That referral handle was just taken by someone else. Please try another.');
-    if (e && e.message === 'has-handle') return; // another tab set one first
+    // Not ours to give: another tab of this account already holds one.
+    if (e && e.message === 'has-handle') return setByOtherTab;
+    // Includes 'taken' and the bridge's already-exists — the commit-time
+    // collision the old code let through as a silent success.
+    if (isTakenError(e)) throw new Error(HANDLE_TAKEN_MSG);
+    if (e && e.code === 'resource-exhausted') throw new Error('The service is temporarily out of write capacity. Please try again in a few minutes.');
+    if (e && e.code === 'permission-denied') throw new Error('Your referral handle could not be saved right now. Please try again in a moment.');
+    throw new Error('Could not save your referral handle. Please try again.');
   }
 }
 
@@ -341,7 +400,7 @@ export async function setReferralHandle(rawHandle) {
     const row = await getDoc(doc(db, 'referralHandles', handle));
     if (row.exists()) {
       if ((row.data() || {}).userId === user.uid) return { ok: true, handle };
-      throw new Error('That referral handle was just taken by someone else. Please try another.');
+      throw new Error(HANDLE_TAKEN_MSG);
     }
     // Row missing — fall through and recreate it (the user doc already
     // claims the handle, so only the mapping row is written below).
@@ -361,7 +420,13 @@ export async function setReferralHandle(rawHandle) {
       if (!claimsHandle) tx.update(userRef, { referralHandle: handle });
     });
   } catch (e) {
-    if (e && e.message === 'taken') throw new Error('That referral handle was just taken by someone else. Please try another.');
+    // 'taken' is our own sentinel for "somebody else owns it", found on the
+    // pre-read. already-exists is the same fact discovered at commit instead
+    // — both accounts saw the row absent in the same instant. Same message
+    // either way: it's taken, pick another one. The old code only matched the
+    // sentinel, so the commit-time collision fell through to "try again" —
+    // advice that can never work, because the row is not there any more.
+    if (isTakenError(e)) throw new Error(HANDLE_TAKEN_MSG);
     if (e && e.code === 'resource-exhausted') throw new Error('The service is temporarily out of write capacity. Please try again in a few minutes.');
     if (e && e.code === 'permission-denied') throw new Error('Your referral handle could not be changed right now. Please try again in a moment.');
     throw new Error('Could not change your referral handle. Please try again.');

@@ -81,6 +81,18 @@ async function fillEarnings(users, body, run) {
   }));
 }
 
+// The Status cell. Admins get the same badge the detail drawer already shows,
+// and skip the advisory risk flag: the heuristic (rejection ratio, penalty
+// totals) exists to catch fraudulent EARNING accounts, and it trips on an
+// operator testing their own reject flow — which then reads as an accusation
+// of abuse against the site's own staff. The raw heuristic stays untouched in
+// admin-actions.js, so anything that genuinely wants every flag can still ask.
+const statusBadges = (u) =>
+  (u.status === 'banned' ? badge('Banned', 'red', { dot: true }) : badge('Active', 'green', { dot: true }))
+  + (u.role === 'admin'
+    ? badge('Admin', 'gold')
+    : (computeRiskFlags(u).length ? badge('Review recommended', 'amber') : ''));
+
 // One page of the list. `run` comes from autoPager: when a newer run starts
 // (search, filter change, ban/unban) this one stops instead of appending stale rows.
 async function load(reset, run) {
@@ -122,8 +134,7 @@ async function load(reset, run) {
         <td style="width:44px"><span class="avatar sm">${esc(initials(u.fullName))}</span></td>
         <td><div class="cell-strong">${esc(u.fullName || '—')}</div><div class="small muted">${esc(u.email)}</div></td>
         <td class="num">${esc(u.phone || '—')}</td>
-        <td>${u.status === 'banned' ? badge('Banned', 'red', { dot: true }) : badge('Active', 'green', { dot: true })}
-            ${computeRiskFlags(u).length ? badge('Review recommended', 'amber') : ''}</td>
+        <td>${statusBadges(u)}</td>
         <td class="small num">${esc(fmtDateTime(u.createdAt))}</td>
         <td class="cell-strong num u-earn">—</td>
         <td style="text-align:right"><button class="btn ghost btn-sm" data-open="${esc(u.id)}">Open</button></td>
